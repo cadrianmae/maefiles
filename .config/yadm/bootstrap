@@ -3,15 +3,16 @@
 #
 # Runs after `yadm clone`. Idempotent: safe to re-run.
 #
-# Flow:
-#   1. Initialise pass if missing (pass init <gpg-id>)
-#   2. Retrieve BWS access token from personal bw vault (one interactive unlock)
-#   3. bws secret list → JSON index
-#   4. For each manifest entry: bws secret get → pass insert (skip if present)
-#   5. Render .env template via bin/render-env
-#   6. yadm alt (render all ##template.esh files)
+# Flow (on-demand model — keys seeded to pass, NOT loaded into shell env):
+#   1. Machine class (prompt if unset)
+#   2. Initialise pass if missing (pass init <gpg-id>)
+#   3. Retrieve BWS access token from personal bw vault (one interactive unlock)
+#   4. bws secret list → JSON index
+#   5. For each manifest entry: bws secret get → pass insert (skip if present)
+#   6. .env rendering SKIPPED (opt-in via bin/render-env + manual .zshrc edit)
 #   7. yadm decrypt (unwrap SSH keys etc.)
-#   8. Prompt for machine class if not set
+#
+# Keys enter your shell via: env-key load <path> OR direnv .envrc.
 
 set -euo pipefail
 
@@ -47,7 +48,7 @@ require bw    || exit 1
 require bws   || exit 1
 
 # --- 1. Machine class -------------------------------------------------------
-step "1/8  machine class"
+step "1/7  machine class"
 CLASS=$(yadm config local.class 2>/dev/null || true)
 if [[ -z "$CLASS" ]]; then
   read -rp "Machine class [personal/work]: " CLASS
@@ -58,13 +59,18 @@ else
 fi
 
 # Resolve BW vault item name now that class is known.
+# NB: `yadm config <missing-key>` exits 0 with empty stdout (not non-zero),
+# so `|| echo fallback` never fires. Explicit empty-check required.
 if [[ -z "${BW_TOKEN_ITEM:-}" ]]; then
-  BW_TOKEN_ITEM=$(yadm config local.bws.token-item 2>/dev/null || echo "BWS Access Token - $(hostname -s)-$CLASS")
+  BW_TOKEN_ITEM=$(yadm config local.bws.token-item 2>/dev/null || true)
+  if [[ -z "$BW_TOKEN_ITEM" ]]; then
+    BW_TOKEN_ITEM="BWS Access Token - $(hostname -s)-$CLASS"
+  fi
 fi
 info "will look up bw vault item: '$BW_TOKEN_ITEM'"
 
 # --- 2. Initialise pass -----------------------------------------------------
-step "2/8  pass init (if needed)"
+step "2/7  pass init (if needed)"
 if [[ ! -d "$HOME/.password-store" ]]; then
   GPG_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
   [[ -n "$GPG_ID" ]] || { error "no GPG secret key"; exit 1; }
@@ -74,7 +80,7 @@ else
 fi
 
 # --- 3. Retrieve BWS access token from personal bw vault --------------------
-step "3/8  fetch BWS access token from bw vault"
+step "3/7  fetch BWS access token from bw vault"
 if [[ -z "${BWS_ACCESS_TOKEN:-}" ]]; then
   info "unlocking personal bw vault to retrieve BWS token..."
   if ! bw login --check >/dev/null 2>&1; then
@@ -82,7 +88,8 @@ if [[ -z "${BWS_ACCESS_TOKEN:-}" ]]; then
   fi
   BW_SESSION=$(bw unlock --raw)
   export BW_SESSION
-  run bw sync
+  # bw sync is read-only (fetch remote → local cache); run it in dry-run too
+  bw sync >/dev/null
   BWS_ACCESS_TOKEN=$(bw get password "$BW_TOKEN_ITEM" 2>/dev/null) || {
     error "item not found in bw vault: '$BW_TOKEN_ITEM'"
     error "create it with your BWS access token as the password field."
@@ -95,7 +102,7 @@ if [[ -z "${BWS_ACCESS_TOKEN:-}" ]]; then
 fi
 
 # --- 4. BWS secret index ----------------------------------------------------
-step "4/8  list BWS secrets"
+step "4/7  list BWS secrets"
 BWS_INDEX=$(mktemp)
 trap 'rm -f "$BWS_INDEX"' EXIT
 if ! bws secret list --output json >"$BWS_INDEX" 2>/dev/null; then
@@ -106,7 +113,7 @@ SECRET_COUNT=$(jq 'length' "$BWS_INDEX")
 info "$SECRET_COUNT secrets visible to this machine account"
 
 # --- 5. Seed pass from manifest ---------------------------------------------
-step "5/8  seed pass from BWS"
+step "5/7  seed pass from BWS"
 MANIFEST_JSON=$(yq -o=json '.secrets[]' "$MANIFEST" | jq -s '.')
 COUNT=$(jq 'length' <<<"$MANIFEST_JSON")
 
@@ -141,16 +148,16 @@ for i in $(seq 0 $((COUNT - 1))); do
   fi
 done
 
-# --- 6. Render .env template -----------------------------------------------
-step "6/8  render .env template from manifest"
-run "$HOME/bin/render-env"
+# --- 6. .env render (opt-in) ----------------------------------------------
+# On-demand model (default): keys stay in pass, loaded via env-key or direnv.
+# Auto-load model (opt-in): run `bin/render-env` manually to materialise
+# ~/.env##template.esh; yadm alt then renders ~/.env. Not enabled by default.
+step "6/7  .env render (skipped — on-demand model)"
+info "skipping render-env + yadm alt; use env-key or direnv to load keys on demand"
+info "to opt into auto-load: run 'bin/render-env' then add 'source ~/.env' to .zshrc"
 
-# --- 7. yadm alt -----------------------------------------------------------
-step "7/8  yadm alt"
-run yadm alt
-
-# --- 8. yadm decrypt -------------------------------------------------------
-step "8/8  yadm decrypt"
+# --- 7. yadm decrypt -------------------------------------------------------
+step "7/7  yadm decrypt"
 run yadm decrypt || warn "yadm decrypt failed or nothing to decrypt"
 
 # Clear stale flag if present

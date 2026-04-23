@@ -148,8 +148,15 @@ zstyle ':completion:*:*:okular:*' file-patterns '*.{pdf,md,txt,doc}:documents'
 
 alias odino-index='odino index . --model BAAI/bge-small-en-v1.5'
 
-# Load local environment variables if the file exists
-# [ -f ~/.env.local ] && source ~/.env.local
+# maefiles on-demand key model:
+#   Secrets live in `pass`, loaded explicitly via `env-key load <path>` or
+#   per-project via direnv `.envrc`. No auto-load here.
+# Nudge only: if the daily timer flagged stale secrets, warn on shell open.
+if [[ -f ~/.cache/yadm-secrets-stale ]]; then
+  _stale_count=$(wc -l < ~/.cache/yadm-secrets-stale 2>/dev/null)
+  echo "[WARN] ${_stale_count} secret(s) stale. Run: yadm-refresh-secrets"
+  unset _stale_count
+fi
 
 fortune | cowsay -f $(cowsay -l | tail -n +2 | tr ' ' '\n' | shuf -n 1) | lolcat -b
 eval "$(direnv hook zsh)"

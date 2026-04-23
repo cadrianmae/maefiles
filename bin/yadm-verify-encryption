@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# yadm-verify-encryption — confirm git-crypt scope actually covers secrets
+# yadm-verify-encryption — confirm git-crypt scope actually covers secrets.
 #
-# Locks git-crypt, scans the working tree for secret patterns, then unlocks.
-# If any matches found, fails: something is committed plaintext that shouldn't be.
+# Locks git-crypt, scans yadm-tracked files (NOT all of $HOME) for secret
+# patterns, then unlocks. If matches are found in files not in git-crypt scope,
+# something is committed plaintext that shouldn't be.
+#
+# Scope: only `yadm ls-files` — tracked files only. Scanning $HOME takes 30+
+# minutes and finds unrelated app state (browser caches, node_modules, etc.).
 
 set -euo pipefail
 
@@ -20,24 +24,45 @@ trap restore EXIT
 step "locking git-crypt"
 run yadm git-crypt lock
 
-step "scanning for plaintext secrets"
+step "scanning tracked files for plaintext secrets"
 
 FAIL=0
 
 # 1. docs/secret/** should be unreadable (gibberish) when locked
-for f in docs/secret/*.md docs/secret/*.yaml docs/secret/*.yml; do
+while IFS= read -r f; do
   [[ -f "$f" ]] || continue
-  if file "$f" 2>/dev/null | grep -q "ASCII text"; then
-    error "$f is plaintext while git-crypt locked — NOT in crypt scope"
-    FAIL=1
+  # Files in git-crypt scope should have the binary magic-bytes header when
+  # locked. Working copy will look like ASCII if NOT in scope.
+  if file "$f" 2>/dev/null | grep -q -E "ASCII text|Unicode text|UTF-8"; then
+    # Is this file expected to be encrypted?
+    if [[ "$f" == docs/secret/* ]]; then
+      error "$f is plaintext while git-crypt locked — NOT in crypt scope"
+      FAIL=1
+    fi
   fi
-done
+done < <(yadm ls-files docs/secret/ 2>/dev/null)
 
-# 2. gitleaks pass against whole tracked set
+# 2. gitleaks on tracked files only. Write file list to temp, scan that.
 if command -v gitleaks >/dev/null; then
-  if ! gitleaks detect --no-git --source "$HOME" --exit-code 1 \
-      --report-path /tmp/gitleaks-report.json 2>/dev/null; then
-    error "gitleaks found secrets in unencrypted files:"
+  tracked=$(mktemp)
+  trap 'rm -f "$tracked" /tmp/gitleaks-report.json' EXIT INT TERM
+
+  # Collect only EXISTING tracked files. --no-git + a file-list scan is done
+  # by passing each file as --source; but gitleaks only accepts one --source.
+  # Workaround: create a temp dir of symlinks then scan that.
+  scan_dir=$(mktemp -d)
+  trap 'rm -rf "$tracked" "$scan_dir" /tmp/gitleaks-report.json' EXIT INT TERM
+
+  while IFS= read -r f; do
+    [[ -f "$HOME/$f" ]] || continue
+    target="$scan_dir/$(echo "$f" | tr '/' '_')"
+    ln -sf "$HOME/$f" "$target"
+  done < <(yadm ls-files 2>/dev/null)
+
+  info "scanning $(yadm ls-files | wc -l) tracked files via gitleaks"
+  if ! gitleaks detect --no-git --source "$scan_dir" --exit-code 1 \
+      --report-path /tmp/gitleaks-report.json --no-banner 2>/dev/null; then
+    error "gitleaks found secrets in unencrypted tracked files:"
     jq -r '.[] | "  \(.File):\(.StartLine) — \(.RuleID)"' /tmp/gitleaks-report.json 2>/dev/null \
       | head -20 >&2
     FAIL=1
@@ -45,7 +70,7 @@ if command -v gitleaks >/dev/null; then
 fi
 
 if [[ $FAIL -eq 0 ]]; then
-  ok "encryption coverage verified — no plaintext secrets while locked"
+  ok "encryption coverage verified — no plaintext secrets in tracked files while locked"
 else
   error "encryption gap found"
 fi
