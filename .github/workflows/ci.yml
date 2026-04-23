@@ -13,6 +13,19 @@ jobs:
       - uses: ludeeus/action-shellcheck@master
         with:
           severity: warning
+          # Exclude her pre-existing bin/ scripts adopted from Stow — they
+          # have known warnings not in scope for this migration. New scripts
+          # under bin/yadm-* + bin/render-env + bin/nvim-sync still get
+          # checked (explicitly re-added via additional_files).
+          ignore_paths: 'bin'
+          additional_files: >-
+            bin/render-env
+            bin/nvim-sync
+            bin/yadm-audit
+            bin/yadm-check-staleness
+            bin/yadm-discover
+            bin/yadm-refresh-secrets
+            bin/yadm-verify-encryption
 
   gitleaks:
     runs-on: ubuntu-latest

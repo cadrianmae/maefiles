@@ -164,13 +164,18 @@ fi
 # --- 5. GPG key check ---------------------------------------------------
 step "5/8  verify GPG secret key"
 if ! gpg --list-secret-keys --with-colons 2>/dev/null | grep -q '^sec:'; then
-  error "No GPG secret key found."
-  error "Generate one:  gpg --full-generate-key  (ed25519)"
-  error "Or import:     gpg --import <file>"
-  error "Then re-run this installer."
-  exit 1
+  if [[ $DRY_RUN -eq 1 ]]; then
+    warn "No GPG secret key — dry-run continues (would abort in a real install)"
+  else
+    error "No GPG secret key found."
+    error "Generate one:  gpg --full-generate-key  (ed25519)"
+    error "Or import:     gpg --import <file>"
+    error "Then re-run this installer."
+    exit 1
+  fi
+else
+  info "GPG key present: $(gpg --list-secret-keys --keyid-format long | awk '/^sec/{print $2; exit}')"
 fi
-info "GPG key present: $(gpg --list-secret-keys --keyid-format long | awk '/^sec/{print $2; exit}')"
 
 # --- 6. Clone -----------------------------------------------------------
 step "6/8  clone maefiles via yadm"
