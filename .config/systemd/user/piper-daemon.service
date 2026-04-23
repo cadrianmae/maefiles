@@ -1,0 +1,14 @@
+[Unit]
+Description=Piper TTS Daemon (persistent model cache)
+Requires=piper-daemon.socket
+
+[Service]
+Type=exec
+ExecStart=/home/cadrianmae/.config/speech-dispatcher/piper/daemon.py
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/home/cadrianmae/.local/bin"
+Environment="LD_LIBRARY_PATH=/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/cublas/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/cuda_nvrtc/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/cuda_runtime/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/cudnn/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/cufft/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/curand/lib:/home/cadrianmae/.local/lib/python3.14/site-packages/nvidia/nvjitlink/lib"
+Restart=no
+TimeoutStopSec=5
+
+[Install]
+WantedBy=default.target

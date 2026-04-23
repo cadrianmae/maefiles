@@ -1,0 +1,20 @@
+[Unit]
+Description=Build project memory from Claude transcripts
+Documentation=man:build-memory(1)
+
+[Service]
+Type=oneshot
+ExecStart=/home/cadrianmae/.local/bin/build-memory --all
+StandardOutput=journal
+StandardError=journal
+
+# Environment
+Environment="BUILD_MEMORY_VERBOSE=false"
+Environment="PATH=/usr/local/bin:/usr/bin:/bin:/home/cadrianmae/.local/bin"
+
+# Performance
+Nice=19
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target
