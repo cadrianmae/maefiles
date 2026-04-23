@@ -1,21 +1,8 @@
-# Patterns for files to include in `yadm encrypt` → gpg archive
-# One pattern per line. Negation with ! prefix.
+# Patterns for files to include in `yadm encrypt` → gpg archive.
+# Mae's current policy (ADR 004): use PER-MACHINE SSH keys instead of
+# tracking encrypted keys here. Better blast radius — compromising one
+# machine's GPG doesn't expose other machines' SSH access.
 #
-# The resulting archive lives at ~/.local/share/yadm/archive and IS tracked.
-# Working-copy files remain plaintext locally (listed below); the archive is
-# the encrypted commitable artifact.
-
-# SSH keys
-.ssh/id_ed25519
-.ssh/id_ed25519.pub
-.ssh/id_rsa
-.ssh/id_rsa.pub
-
-# Known hosts (not strictly secret but host-enumeration risk if public)
-.ssh/known_hosts
-
-# GPG revocation certificates (if stored)
-.gnupg/openpgp-revocs.d/*
-
-# Example: exclude any "*.example" placeholder files
-!*.example
+# If you later want to track anything here, uncomment a pattern, run
+# `yadm encrypt`, then `yadm add .local/share/yadm/archive` + commit.
+# Uses asymmetric encryption to key C8ABE62412652B9E (set in .config/yadm/config).

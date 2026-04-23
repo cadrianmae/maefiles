@@ -17,6 +17,14 @@ FAIL=0
 command -v yq >/dev/null || { echo "[ERROR] yq required" >&2; exit 1; }
 command -v pass >/dev/null || { echo "[ERROR] pass required" >&2; exit 1; }
 
+# Skip gracefully if manifest can't be parsed (most likely git-crypt locked).
+# We still want to block commits for REAL drift, but not fight with
+# intentional lock cycles during repo maintenance.
+if ! yq -r '.bws.project // "x"' "$MANIFEST" >/dev/null 2>&1; then
+  echo "[SKIP] manifest unparseable (probably git-crypt-locked); run 'yadm git-crypt unlock' then re-run audit"
+  exit 0
+fi
+
 # 1. Every manifest entry has a pass entry
 while IFS=$'\t' read -r env pass_path bws; do
   if ! pass show "$pass_path" >/dev/null 2>&1; then

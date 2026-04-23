@@ -4,6 +4,6 @@
 [yadm]
 	# Use GPG (not OpenSSL) for `yadm encrypt`
 	cipher = gpg
-	# Use asymmetric encryption — so we can push the archive publicly (if ever)
-	# and only machines with the recipient key can decrypt
-	# gpg-recipient = <your-key-id>    # uncomment and set on first machine
+	# Use asymmetric encryption — archive can be pushed publicly and only
+	# machines with the recipient key can decrypt. Matches the git-crypt model.
+	gpg-recipient = C8ABE62412652B9E
