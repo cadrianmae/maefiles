@@ -1,0 +1,11 @@
+_HiStOrY_V2_
+assert(student(john)).
+student(X).
+listing(:Pred).
+listing(student).
+listing(john).
+clear.
+cls.
+?\040.
+help.
+halt.

@@ -1,0 +1,32 @@
+# Claude Code
+**/.claude/settings.local.json
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# Build artifacts
+node_modules/
+__pycache__/
+*.pyc
+dist/
+build/
+
+# Environment
+.env
+.env.local
+
+# Local-only files
+*.local.*

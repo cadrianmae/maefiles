@@ -1,0 +1,14 @@
+#!/bin/bash
+# Validate commit message format (warning only)
+
+commit_msg_file=$1
+commit_msg=$(cat "$commit_msg_file")
+
+# Check if commit message follows conventional format
+if ! echo "$commit_msg" | grep -qE "^(feat|fix|docs|style|refactor|test|chore)(\([a-z0-9-]+\))?:"; then
+    echo "[WARNING] Non-conventional commit message"
+    echo "Expected: <type>(scope): subject"
+    echo "Example: feat(api): add endpoint"
+fi
+
+exit 0
