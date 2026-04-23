@@ -1,172 +1,254 @@
-#!/usr/bin/env bash
+#!/usr/bin/env python3
 # pii-scan: skip
-# pii-scan — grep for personally identifiable information in files or dirs.
-#
-# Usage:
-#   pii-scan <path> [<path> ...]
-#   pii-scan --all                 # scan every yadm-tracked file
-#   pii-scan --staged              # scan yadm-staged changes only (pre-commit)
-#
-# Patterns tuned for Mae; extend via a git-crypted custom file at
-# ~/docs/secret/pii-patterns.txt — one ERE pattern per line, # for comments.
-#
-# Exit code:
-#   0  no matches
-#   1  matches found (prints them, redacted)
-#   2  usage error
+"""
+pii-scan — grep for personally identifiable information in files or dirs.
 
-set -euo pipefail
+Single-pass per file using compiled regex alternation. Replaces a bash
+implementation that shelled out per-pattern-per-line (O(N*M) subprocess calls).
 
-MODE="paths"
-EXTRA_PATTERNS="$HOME/docs/secret/pii-patterns.txt"
+Usage:
+    pii-scan <path> [<path> ...]
+    pii-scan --all               # scan every yadm-tracked file
+    pii-scan --staged            # scan yadm-staged changes only (pre-commit)
 
-# Built-in patterns
-# Tune here for false-positive rate. Each entry: NAME|PATTERN
-# Known-safe patterns (never flagged even if they match a rule above).
-# Mostly machine/service identifiers that look like PII but aren't.
-SAFE_PATTERNS=(
-  # Git hosting SSH URLs
-  'git@github\.com'
-  'git@gitlab\.com'
-  'git@bitbucket\.org'
-  '[a-zA-Z0-9._+-]+@users\.noreply\.github\.com'
-  'noreply@[a-zA-Z0-9.-]+'
-  # Example / placeholder patterns
-  'example@[a-zA-Z0-9.-]+'
-  '.*@example\.(com|org|net|ta)'
-  'vader@[a-zA-Z0-9.-]+'
-  'user@[a-zA-Z0-9.-]+'
-  'foo@[a-zA-Z0-9.-]+'
-  # Systemd unit names (look like emails due to user@scope syntax)
-  '[a-zA-Z][a-zA-Z0-9._-]*@[a-zA-Z0-9._-]+\.(service|target|timer|socket|mount|slice|scope|path|device)'
-  # Fake TLDs used in RFC 2606 / 6761 examples
-  '.*@[a-zA-Z0-9.-]+\.(local|test|invalid|localhost)'
-)
+Extra user patterns: put ERE regex (one per line, # for comments) in
+    ~/docs/secret/pii-patterns.txt  (git-crypted).
 
-PATTERNS=(
-  'TU-Dublin-student|[Cc][0-9]{8}'
-  'email|[a-zA-Z0-9_][a-zA-Z0-9._+%-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}'
-  'IE-phone|\+353[ -][0-9]{1,2}[ -][0-9]{3,4}[ -]?[0-9]{3,4}'
-  'IE-mobile|08[3-9][ -]?[0-9]{3}[ -]?[0-9]{4}'
-  'UK-phone|\+44[ -][0-9]{4,5}[ -][0-9]{5,6}'
-  'IE-eircode|[ADEHK-NP-TVWXY][0-9]{2}[ ][A-HK-NP-Z0-9]{4}'
-  'UK-postcode|[A-Z]{1,2}[0-9][A-Z0-9]?[ ][0-9][A-Z]{2}'
-  'IBAN|(IE|GB|DE|FR|ES|IT|NL|BE|AT|LU|PT|CH)[0-9]{2}[A-Z0-9]{10,30}'
-  'credit-card|4[0-9]{15}|5[1-5][0-9]{14}|3[47][0-9]{13}'
-  'legal-name|Mae[ ]|,?[ ]Mae'
-  'health-keyword|ADHD|autism|autistic|Asperger|(prescri|medicat)[a-z]+|diagnosis|therapist'
-  'IE-PPS|[0-9]{7}[A-Z]{1,2}'
-)
+Pragma to skip a whole file: include `pii-scan: skip` anywhere in its
+first 100 lines (e.g. in a comment).
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --all)     MODE="all" ;;
-    --staged)  MODE="staged" ;;
-    -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    --)        shift; break ;;
-    -*)        echo "unknown flag: $1" >&2; exit 2 ;;
-    *)         break ;;
-  esac
-  shift
-done
+Exit code:
+    0  no matches
+    1  matches found (redacted, grouped by file)
+    2  usage error
+"""
 
-# Assemble file list
-files=()
-case "$MODE" in
-  paths)
-    (( $# > 0 )) || { echo "pii-scan: no path given (use --all or --staged)" >&2; exit 2; }
-    for p in "$@"; do
-      if [[ -d "$p" ]]; then
-        while IFS= read -r f; do files+=("$f"); done < <(find "$p" -type f \
-          ! -path '*/.git/*' ! -path '*/node_modules/*' ! -path '*/.cache/*' \
-          ! -name '*.bin' ! -name '*.jpg' ! -name '*.png' ! -name '*.wav' \
-          ! -name '*.mp3' ! -name '*.mp4' ! -name '*.zip' ! -name '*.gz' 2>/dev/null)
-      elif [[ -f "$p" ]]; then
-        files+=("$p")
-      fi
-    done
-    ;;
-  all)
-    while IFS= read -r f; do files+=("$HOME/$f"); done < <(yadm ls-files 2>/dev/null)
-    ;;
-  staged)
-    while IFS= read -r f; do files+=("$HOME/$f"); done < <(yadm diff --cached --name-only 2>/dev/null)
-    ;;
-esac
+from __future__ import annotations
 
-(( ${#files[@]} > 0 )) || { echo "[OK] nothing to scan"; exit 0; }
+import argparse
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+from typing import Iterable
 
-# Load extra patterns if the file exists (git-crypted)
-extra_patterns=()
-if [[ -f "$EXTRA_PATTERNS" ]]; then
-  while IFS= read -r line; do
-    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    extra_patterns+=("$line")
-  done < "$EXTRA_PATTERNS"
-fi
+HOME = Path.home()
 
-# Redact helper: keep first 2 + last 2 chars, blank the middle
-redact() {
-  local s="$1" n=${#1}
-  if (( n <= 4 )); then
-    printf '%s' "****"
-  else
-    printf '%s%s%s' "${s:0:2}" "$(printf '*%.0s' $(seq 1 $((n-4))))" "${s: -2}"
-  fi
-}
+# ---------------------------------------------------------------------------
+# Safe-pattern filter: matches that LOOK like PII but are known benign.
+# Values matching any of these are dropped from findings.
+# ---------------------------------------------------------------------------
+SAFE = [
+    # Git-hosting SSH URLs
+    r"^git@github\.com$",
+    r"^git@gitlab\.com$",
+    r"^git@bitbucket\.org$",
+    r"^[A-Za-z0-9._+-]+@users\.noreply\.github\.com$",
+    r"^noreply@[A-Za-z0-9.-]+$",
+    # Example / placeholder emails
+    r"^example@[A-Za-z0-9.-]+$",
+    r"^.*@example\.(com|org|net|ta)$",
+    r"^vader@[A-Za-z0-9.-]+$",
+    r"^user@[A-Za-z0-9.-]+$",
+    r"^foo@[A-Za-z0-9.-]+$",
+    r"^bar@[A-Za-z0-9.-]+$",
+    # Systemd unit names resembling user@scope.service
+    r"^[A-Za-z][A-Za-z0-9._-]*@[A-Za-z0-9._-]+\.(service|target|timer|socket|mount|slice|scope|path|device)$",
+    # Fake TLDs (RFC 2606 / 6761)
+    r"^.*@[A-Za-z0-9.-]+\.(local|test|invalid|localhost)$",
+]
+SAFE_RES = [re.compile(p) for p in SAFE]
 
-FAIL=0
-declare -A HITS=()
+# ---------------------------------------------------------------------------
+# Detection patterns — name → regex
+# ---------------------------------------------------------------------------
+PATTERNS = [
+    ("TU-Dublin-student", r"[Cc][0-9]{8}"),
+    ("email",             r"[A-Za-z0-9_][A-Za-z0-9._+%-]*@[A-Za-z0-9][A-Za-z0-9.-]*\.[A-Za-z]{2,}"),
+    ("IE-phone",          r"\+353[ -][0-9]{1,2}[ -][0-9]{3,4}[ -]?[0-9]{3,4}"),
+    ("IE-mobile",         r"08[3-9][ -]?[0-9]{3}[ -]?[0-9]{4}"),
+    ("UK-phone",          r"\+44[ -][0-9]{4,5}[ -][0-9]{5,6}"),
+    ("IE-eircode",        r"[ADEHK-NP-TVWXY][0-9]{2} [A-HK-NP-Z0-9]{4}"),
+    ("UK-postcode",       r"[A-Z]{1,2}[0-9][A-Z0-9]? [0-9][A-Z]{2}"),
+    ("IBAN",              r"(IE|GB|DE|FR|ES|IT|NL|BE|AT|LU|PT|CH)[0-9]{2}[A-Z0-9]{10,30}"),
+    ("credit-card",       r"4[0-9]{15}|5[1-5][0-9]{14}|3[47][0-9]{13}"),
+    ("legal-name",        r"Mae|,? Mae"),
+    ("health-keyword",    r"\b(?:ADHD|autism|autistic|Asperger|medication|prescri\w+|diagnosis|therapist)\b"),
+    ("IE-PPS",            r"\b[0-9]{7}[A-Z]{1,2}\b"),
+]
 
-scan_file() {
-  local f="$1"
-  # Binary-skip by checking if the first chunk contains nulls
-  head -c 2048 "$f" 2>/dev/null | grep -qz '' || return 0
-  # Pragma-skip: files containing `pii-scan: skip` in the first 100 lines
-  # self-exempt (e.g. this script, which contains pattern names as literals).
-  head -100 "$f" 2>/dev/null | grep -q 'pii-scan: skip' && return 0
-  local line_no matches
-  while IFS=: read -r line_no line; do
-    [[ -z "$line" ]] && continue
-    for entry in "${PATTERNS[@]}" "${extra_patterns[@]}"; do
-      local name="${entry%%|*}" pattern="${entry#*|}"
-      if echo "$line" | grep -qE "$pattern"; then
-        matches=$(echo "$line" | grep -oE "$pattern" | head -1)
-        # Skip known-safe patterns (false-positive filter)
-        local safe=0
-        for sp in "${SAFE_PATTERNS[@]}"; do
-          if echo "$matches" | grep -qE "^${sp}$"; then
-            safe=1
-            break
-          fi
-        done
-        [[ $safe -eq 1 ]] && continue
-        redacted=$(redact "$matches")
-        HITS["$f:$line_no:$name"]="$redacted"
-        FAIL=1
-      fi
-    done
-  done < <(grep -nI '' "$f" 2>/dev/null)
-}
+# Compile a single alternation with named groups for per-match categorisation
+_named_parts = [f"(?P<p{i}>{rx})" for i, (_, rx) in enumerate(PATTERNS)]
+_extra_pattern_path = HOME / "docs" / "secret" / "pii-patterns.txt"
 
-for f in "${files[@]}"; do
-  [[ -f "$f" ]] || continue
-  scan_file "$f"
-done
 
-if [[ $FAIL -eq 0 ]]; then
-  echo "[OK] no PII patterns found across ${#files[@]} files"
-  exit 0
-fi
+def load_extra_patterns() -> list[tuple[str, re.Pattern]]:
+    if not _extra_pattern_path.is_file():
+        return []
+    out = []
+    for line in _extra_pattern_path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            out.append(("custom", re.compile(line)))
+        except re.error as e:
+            print(f"[WARN] bad extra pattern: {line} ({e})", file=sys.stderr)
+    return out
 
-# Report grouped by file
-echo "[PII] matches found (values redacted):"
-for key in "${!HITS[@]}"; do
-  f="${key%%:*}"
-  rest="${key#*:}"
-  line="${rest%%:*}"
-  category="${rest#*:}"
-  printf "  %s:%s  [%s]  %s\n" "${f#$HOME/}" "$line" "$category" "${HITS[$key]}"
-done | sort
 
-exit 1
+def is_safe(match: str) -> bool:
+    return any(sp.match(match) for sp in SAFE_RES)
+
+
+def redact(s: str) -> str:
+    n = len(s)
+    if n <= 4:
+        return "****"
+    return f"{s[:2]}{'*' * (n - 4)}{s[-2:]}"
+
+
+def scan_text(text: str, compiled: re.Pattern) -> list[tuple[int, str, str]]:
+    """Yield (line_no, category, match) for each non-safe finding."""
+    found = []
+    for line_no, line in enumerate(text.splitlines(), 1):
+        for m in compiled.finditer(line):
+            value = m.group()
+            if is_safe(value):
+                continue
+            # Determine category from the first non-None named group
+            for idx, (name, _) in enumerate(PATTERNS):
+                if m.group(f"p{idx}") is not None:
+                    found.append((line_no, name, value))
+                    break
+    return found
+
+
+def is_binary(path: Path) -> bool:
+    try:
+        chunk = path.open("rb").read(4096)
+    except OSError:
+        return True
+    return b"\0" in chunk
+
+
+def has_skip_pragma(path: Path) -> bool:
+    try:
+        with path.open("r", errors="replace") as f:
+            for _ in range(100):
+                line = f.readline()
+                if not line:
+                    break
+                if "pii-scan: skip" in line:
+                    return True
+    except OSError:
+        pass
+    return False
+
+
+def iter_files(paths: Iterable[str]) -> Iterable[Path]:
+    skip_dirs = {".git", "node_modules", ".cache", "__pycache__", ".venv", "venv"}
+    skip_exts = {".bin", ".jpg", ".jpeg", ".png", ".gif", ".wav", ".mp3", ".mp4",
+                 ".webm", ".ogg", ".flac", ".zip", ".gz", ".xz", ".tar", ".7z",
+                 ".pdf", ".odp", ".ods", ".odt", ".docx", ".xlsx", ".pptx",
+                 ".so", ".o", ".a", ".dylib", ".exe"}
+    for p in paths:
+        path = Path(p).expanduser()
+        if path.is_file():
+            yield path
+        elif path.is_dir():
+            for root, dirs, files in os.walk(path):
+                dirs[:] = [d for d in dirs if d not in skip_dirs]
+                for name in files:
+                    fp = Path(root) / name
+                    if fp.suffix.lower() in skip_exts:
+                        continue
+                    yield fp
+
+
+def list_tracked() -> list[Path]:
+    try:
+        out = subprocess.run(["yadm", "ls-files"], capture_output=True, text=True, check=True)
+        return [HOME / line for line in out.stdout.splitlines() if line]
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+
+
+def list_staged() -> list[Path]:
+    try:
+        out = subprocess.run(["yadm", "diff", "--cached", "--name-only", "--diff-filter=ACM"],
+                             capture_output=True, text=True, check=True)
+        return [HOME / line for line in out.stdout.splitlines() if line]
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return []
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(prog="pii-scan", description=__doc__.splitlines()[1],
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--all", action="store_true", help="scan every yadm-tracked file")
+    g.add_argument("--staged", action="store_true", help="scan yadm-staged changes only")
+    ap.add_argument("paths", nargs="*", help="files or directories to scan")
+    args = ap.parse_args()
+
+    if args.all:
+        files = list_tracked()
+    elif args.staged:
+        files = list_staged()
+    else:
+        if not args.paths:
+            ap.error("no paths given (use --all or --staged for bulk scans)")
+        files = list(iter_files(args.paths))
+
+    if not files:
+        print("[OK] nothing to scan")
+        return 0
+
+    # Combine all patterns into one compiled regex for single-pass scanning
+    combined = re.compile("|".join(_named_parts))
+    extra = load_extra_patterns()  # list of (name, compiled)
+
+    findings: dict[Path, list[tuple[int, str, str]]] = {}
+    scanned = 0
+    for fp in files:
+        if not fp.is_file():
+            continue
+        if is_binary(fp):
+            continue
+        if has_skip_pragma(fp):
+            continue
+        try:
+            text = fp.read_text(errors="replace")
+        except OSError:
+            continue
+        scanned += 1
+
+        hits = scan_text(text, combined)
+        # Also run extra user patterns
+        for line_no, line in enumerate(text.splitlines(), 1):
+            for name, rx in extra:
+                for m in rx.finditer(line):
+                    value = m.group()
+                    if is_safe(value):
+                        continue
+                    hits.append((line_no, name, value))
+
+        if hits:
+            findings[fp] = hits
+
+    if not findings:
+        print(f"[OK] no PII patterns found across {scanned} files")
+        return 0
+
+    print("[PII] matches found (values redacted):")
+    for fp in sorted(findings):
+        rel = fp.relative_to(HOME) if fp.is_relative_to(HOME) else fp
+        for line_no, name, value in sorted(findings[fp]):
+            print(f"  {rel}:{line_no}  [{name}]  {redact(value)}")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
