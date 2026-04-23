@@ -1,0 +1,65 @@
+# Swaylock-effects config - KDE-style with Catppuccin Macchiato
+
+# Screenshot with blur (like KDE lock)
+screenshots
+effect-blur=20x3
+effect-vignette=0.3:0.8
+fade-in=0.2
+
+# Clock (like KDE)
+clock
+timestr=%H:%M
+datestr=%A, %d %B
+
+# Indicator ring
+indicator
+indicator-radius=120
+indicator-thickness=8
+indicator-caps-lock
+
+# Catppuccin Macchiato colors
+# Base background fallback
+color=24273a
+
+# Ring colors
+ring-color=6e738d
+ring-ver-color=8aadf4
+ring-wrong-color=ed8796
+ring-clear-color=f5a97f
+
+# Key highlight
+key-hl-color=f5bde6
+bs-hl-color=f5a97f
+
+# Separator
+separator-color=00000000
+
+# Inside colors (transparent for clean look)
+inside-color=00000088
+inside-ver-color=00000088
+inside-wrong-color=ed879644
+inside-clear-color=00000088
+
+# Line (border between inside and ring)
+line-color=00000000
+line-ver-color=00000000
+line-wrong-color=00000000
+line-clear-color=00000000
+
+# Text
+text-color=cad3f5
+text-ver-color=cad3f5
+text-wrong-color=ed8796
+text-clear-color=f5a97f
+
+# Layout text (caps lock warning)
+text-caps-lock-color=eed49f
+
+# Font
+font=Cantarell
+font-size=24
+
+# Grace period (seconds before requiring password)
+grace=2
+grace-no-mouse
+grace-no-touch

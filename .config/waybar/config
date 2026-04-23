@@ -1,0 +1,197 @@
+{
+    "layer": "top",
+    "position": "top",
+    "height": 34,
+    "spacing": 4,
+    "margin-top": 8,
+    "margin-left": 16,
+    "margin-right": 16,
+
+    "modules-left": [
+        "niri/workspaces",
+        "niri/window"
+    ],
+    "modules-center": [
+        "custom/temp",
+        "custom/cpu",
+        "custom/memory",
+        "custom/disk",
+        "pulseaudio",
+        "backlight",
+        "custom/bluetooth",
+        "network",
+        "battery",
+        "tray"
+    ],
+    "modules-right": [
+        "custom/cava",
+        "custom/mpris",
+        "clock",
+        "custom/weather",
+        "custom/notifications"
+    ],
+
+    "niri/workspaces": {
+        "format": "{icon} {name}",
+        "format-icons": {
+            "Mocha": "",
+            "Strawberry": "",
+            "Kitty": "",
+            "focused": "",
+            "default": ""
+        },
+        "on-click": "activate"
+    },
+
+    "niri/window": {
+        "format": "{}",
+        "icon": true,
+        "icon-size": 18,
+        "max-length": 40,
+        "separate-outputs": true
+    },
+
+    "custom/cava": {
+        "exec": "~/.config/waybar/scripts/cava-bar.sh",
+        "tooltip": false
+    },
+
+    "custom/mpris": {
+        "format": "{}",
+        "exec": "~/.config/waybar/scripts/mpris-scroll.sh",
+        "on-click": "playerctl play-pause"
+    },
+
+    "custom/weather": {
+        "exec": "curl -s 'wttr.in/?format=%c+%t' 2>/dev/null || echo ''",
+        "interval": 1800,
+        "format": "{}",
+        "tooltip": false,
+        "on-click": "xdg-open 'https://wttr.in'"
+    },
+
+    "custom/notifications": {
+        "exec": "makoctl list | grep -c 'app-name' || echo 0",
+        "interval": 5,
+        "format": " {}",
+        "on-click": "makoctl dismiss -a",
+        "on-click-right": "makoctl restore",
+        "tooltip": false
+    },
+
+    "custom/temp": {
+        "exec": "~/.config/waybar/scripts/temp-bar.sh",
+        "return-type": "json",
+        "interval": 3,
+        "on-click": "kitty -e btop"
+    },
+
+    "custom/cpu": {
+        "exec": "~/.config/waybar/scripts/cpu-bar.sh",
+        "return-type": "json",
+        "interval": 1,
+        "on-click": "kitty -e btop"
+    },
+
+    "custom/memory": {
+        "exec": "~/.config/waybar/scripts/mem-bar.sh",
+        "return-type": "json",
+        "interval": 1,
+        "on-click": "kitty -e btop"
+    },
+
+    "custom/disk": {
+        "exec": "~/.config/waybar/scripts/disk-bar.sh",
+        "return-type": "json",
+        "interval": 1,
+        "on-click": "kitty -e btop"
+    },
+
+    "pulseaudio": {
+        "format": "{icon}",
+        "format-muted": "󰝟",
+        "format-icons": {
+            "headphone": ["󰋋󰕿", "󰋋󰖀", "󰋋󰕾"],
+            "hands-free": ["󰋎󰕿", "󰋎󰖀", "󰋎󰕾"],
+            "headset": ["󰋎󰕿", "󰋎󰖀", "󰋎󰕾"],
+            "phone": ["󰏲󰕿", "󰏲󰖀", "󰏲󰕾"],
+            "portable": ["󰏲󰕿", "󰏲󰖀", "󰏲󰕾"],
+            "car": ["󰄋󰕿", "󰄋󰖀", "󰄋󰕾"],
+            "speaker": ["󰗿󰕿", "󰗿󰖀", "󰗿󰕾"],
+            "hdmi": ["󰡁󰕿", "󰡁󰖀", "󰡁󰕾"],
+            "default": ["󰕿", "󰖀", "󰕾"]
+        },
+        "tooltip-format": "Volume: {volume}%",
+        "on-click": "pavucontrol",
+        "on-scroll-up": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%+",
+        "on-scroll-down": "wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%-"
+    },
+
+    "backlight": {
+        "format": "{icon}",
+        "format-icons": ["󰃞", "󰃟", "󰃠"],
+        "tooltip-format": "Brightness: {percent}%",
+        "on-scroll-up": "brightnessctl set +5%",
+        "on-scroll-down": "brightnessctl set 5%-"
+    },
+
+    "custom/bluetooth": {
+        "exec": "~/.config/waybar/scripts/bluetooth-bar.sh",
+        "return-type": "json",
+        "interval": 5,
+        "on-click": "blueman-manager",
+        "on-click-right": "bluetoothctl power off || bluetoothctl power on"
+    },
+
+    "network": {
+        "format-wifi": "{icon}",
+        "format-ethernet": "󰈁",
+        "format-disconnected": "󰤭",
+        "format-linked": "󰈁",
+        "format-icons": ["󰤯", "󰤟", "󰤢", "󰤥", "󰤨"],
+        "tooltip-format-wifi": "{essid} ({signalStrength}%)\n{ipaddr}/{cidr}",
+        "tooltip-format-ethernet": "{ifname}: {ipaddr}/{cidr}",
+        "tooltip-format-disconnected": "Disconnected",
+        "on-click": "nm-connection-editor",
+        "on-click-right": "nmcli radio wifi | grep -q enabled && nmcli radio wifi off || nmcli radio wifi on",
+        "on-click-middle": "kitty --class=floating nmtui"
+    },
+
+    "battery": {
+        "states": {
+            "good": 95,
+            "warning": 30,
+            "critical": 15
+        },
+        "format": "{icon}",
+        "format-charging": "{icon}󱐋",
+        "format-plugged": "󰚥{icon}",
+        "format-full": "󰁹󱐋",
+        "format-icons": ["󰁺", "󰁻", "󰁼", "󰁽", "󰁾", "󰁿", "󰂀", "󰂁", "󰂂", "󰁹"],
+        "tooltip-format": "{timeTo}\n{capacity}% - {power}W"
+    },
+
+    "clock": {
+        "format": " {:%H:%M}",
+        "format-alt": " {:%A, %d %B %Y}",
+        "tooltip-format": "<tt><small>{calendar}</small></tt>",
+        "calendar": {
+            "mode": "month",
+            "mode-mon-col": 3,
+            "weeks-pos": "left",
+            "on-scroll": 1,
+            "format": {
+                "months": "<span color='#f5bde6'><b>{}</b></span>",
+                "days": "<span color='#cad3f5'>{}</span>",
+                "weeks": "<span color='#8087a2'>W{}</span>",
+                "weekdays": "<span color='#f0c6c6'><b>{}</b></span>",
+                "today": "<span color='#24273a' bgcolor='#f5bde6'><b>{}</b></span>"
+            }
+        }
+    },
+
+    "tray": {
+        "icon-size": 18,
+        "spacing": 8
+    }
+}

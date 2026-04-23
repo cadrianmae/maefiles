@@ -1,0 +1,326 @@
+/* Import Catppuccin Macchiato */
+@import "catppuccin.css";
+
+* {
+    /* Traditional font for text, Nerd Font fallback for icons */
+    font-family: "Cantarell", "CaskaydiaCove Nerd Font", sans-serif;
+    font-size: 13px;
+    min-height: 0;
+}
+
+window#waybar {
+    /* Frosted glass effect - high transparency */
+    background-color: alpha(@base, 0.6);
+    color: @text;
+    border: 1px solid alpha(@flamingo, 0.3);
+    border-radius: 12px;
+    margin: 16px 16px 0 16px;
+    /* Noise texture overlay via SVG */
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)' opacity='0.03'/%3E%3C/svg%3E");
+}
+
+/* Tooltip styling */
+tooltip {
+    background-color: @base;
+    border: 1px solid @flamingo;
+    border-radius: 8px;
+}
+
+tooltip label {
+    color: @text;
+    padding: 4px;
+}
+
+/* Left modules */
+#workspaces {
+    margin-left: 8px;
+}
+
+#workspaces button {
+    padding: 4px 12px;
+    margin: 2px 2px;
+    color: @subtext0;
+    background: transparent;
+    border: none;
+    border-radius: 999px;
+    transition: all 0.2s ease;
+}
+
+#workspaces button:hover {
+    background: @surface0;
+    color: @text;
+}
+
+#workspaces button.focused,
+#workspaces button.active {
+    background: @flamingo;
+    color: @base;
+}
+
+#workspaces button.urgent {
+    background: @red;
+    color: @base;
+}
+
+/* Hide unnamed workspaces (use ID selector) */
+#workspaces button:not(#niri-workspace-Mocha):not(#niri-workspace-Strawberry):not(#niri-workspace-Kitty) {
+    opacity: 0;
+    min-width: 0;
+    min-height: 0;
+    padding: 0;
+    margin: 0;
+}
+
+#window {
+    padding: 0 12px;
+    color: @subtext1;
+    font-style: italic;
+}
+
+/* Cava visualizer */
+#custom-cava {
+    color: @flamingo;
+    padding: 0 8px;
+    font-size: 12px;
+}
+
+/* Center - Media */
+#custom-mpris {
+    padding: 0 16px;
+    color: @flamingo;
+    font-weight: 500;
+    min-width: 200px;
+}
+
+/* Right modules - common styling */
+#custom-weather,
+#custom-notifications,
+#custom-temp,
+#custom-cpu,
+#custom-memory,
+#custom-disk,
+#custom-bluetooth,
+#pulseaudio,
+#backlight,
+#network,
+#battery,
+#clock {
+    padding: 0 10px;
+    margin: 4px 2px;
+    background: transparent;
+    border-radius: 999px;
+    transition: all 0.2s ease;
+}
+
+/* Hover effects */
+#custom-weather:hover,
+#custom-notifications:hover,
+#custom-temp:hover,
+#custom-cpu:hover,
+#custom-memory:hover,
+#custom-disk:hover,
+#custom-bluetooth:hover,
+#pulseaudio:hover,
+#backlight:hover,
+#network:hover,
+#battery:hover,
+#clock:hover {
+    background: alpha(@surface1, 0.7);
+    border-radius: 999px;
+}
+
+/* Weather */
+#custom-weather {
+    color: @sky;
+}
+
+/* Temperature */
+#custom-temp {
+    color: @green;
+}
+
+#custom-temp.warning {
+    color: @yellow;
+}
+
+#custom-temp.critical {
+    color: @red;
+    animation: glow-red 0.5s ease-in-out infinite alternate;
+}
+
+/* Progress bars - tighter spacing */
+#custom-cpu,
+#custom-memory,
+#custom-disk {
+    letter-spacing: -2px;
+}
+
+/* CPU bar */
+#custom-cpu {
+    color: @blue;
+}
+
+#custom-cpu.warning {
+    color: @yellow;
+}
+
+#custom-cpu.critical {
+    color: @red;
+    animation: glow-red 0.5s ease-in-out infinite alternate;
+}
+
+/* Memory bar */
+#custom-memory {
+    color: @mauve;
+}
+
+#custom-memory.warning {
+    color: @yellow;
+}
+
+#custom-memory.critical {
+    color: @red;
+    animation: glow-red 0.5s ease-in-out infinite alternate;
+}
+
+/* Disk bar */
+#custom-disk {
+    color: @peach;
+}
+
+#custom-disk.warning {
+    color: @yellow;
+}
+
+#custom-disk.critical {
+    color: @red;
+    animation: glow-red 0.5s ease-in-out infinite alternate;
+}
+
+/* Audio */
+#pulseaudio {
+    color: @yellow;
+}
+
+#pulseaudio.muted {
+    color: @overlay0;
+    background: @surface0;
+}
+
+/* Backlight */
+#backlight {
+    color: @yellow;
+}
+
+/* Bluetooth */
+#bluetooth {
+    color: @blue;
+}
+
+#bluetooth.connected {
+    color: @sapphire;
+}
+
+#bluetooth.off,
+#bluetooth.disabled {
+    color: @overlay0;
+    background: transparent;
+}
+
+/* Network */
+#network {
+    color: @teal;
+}
+
+#network.disconnected {
+    color: @overlay0;
+}
+
+/* Battery */
+#battery {
+    color: @green;
+}
+
+#battery.charging {
+    color: @green;
+    background: alpha(@green, 0.2);
+}
+
+#battery.warning:not(.charging) {
+    color: @yellow;
+    background: alpha(@yellow, 0.2);
+}
+
+#battery.critical:not(.charging) {
+    color: @red;
+    background: alpha(@red, 0.2);
+    animation: glow-red 0.5s ease-in-out infinite alternate;
+}
+
+/* Clock - accent colour */
+#clock {
+    color: @flamingo;
+    font-weight: bold;
+    padding: 0 14px;
+}
+
+#clock:hover {
+    background: alpha(@flamingo, 0.8);
+    color: @base;
+}
+
+/* System tray */
+#tray {
+    margin-right: 8px;
+    padding: 0 8px;
+}
+
+#tray > .passive {
+    -gtk-icon-effect: dim;
+}
+
+#tray > .needs-attention {
+    -gtk-icon-effect: highlight;
+    background: @red;
+    border-radius: 4px;
+}
+
+/* Animations */
+@keyframes blink {
+    to {
+        background-color: @red;
+        color: @base;
+    }
+}
+
+@keyframes glow-peach {
+    from {
+        text-shadow: 0 0 2px alpha(@peach, 0.2), 0 0 6px alpha(@peach, 0.2), 0 0 12px alpha(@peach, 0.1);
+    }
+    to {
+        text-shadow: 0 0 2px @peach, 0 0 8px @peach, 0 0 16px alpha(@peach, 0.8);
+    }
+}
+
+@keyframes glow-red {
+    from {
+        text-shadow: 0 0 2px alpha(@red, 0.2), 0 0 6px alpha(@red, 0.2), 0 0 12px alpha(@red, 0.1);
+    }
+    to {
+        text-shadow: 0 0 2px @red, 0 0 8px @red, 0 0 16px alpha(@red, 0.8);
+    }
+}
+
+/* Bluetooth */
+#custom-bluetooth {
+    color: @blue;
+}
+
+#custom-bluetooth.off {
+    color: @overlay0;
+}
+
+#custom-bluetooth.warning {
+    color: @peach;
+    animation: glow-peach 1.5s ease-in-out infinite alternate;
+}

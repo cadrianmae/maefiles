@@ -1,0 +1,90 @@
+/* Catppuccin Macchiato */
+@define-color base #24273a;
+@define-color surface0 #363a4f;
+@define-color surface1 #494d64;
+@define-color text #cad3f5;
+@define-color subtext0 #a5adcb;
+@define-color flamingo #f0c6c6;
+@define-color red #ed8796;
+@define-color peach #f5a97f;
+@define-color yellow #eed49f;
+@define-color green #a6da95;
+@define-color blue #8aadf4;
+
+* {
+    font-family: "Cantarell", "CaskaydiaCove Nerd Font", sans-serif;
+    font-size: 18px;
+}
+
+window {
+    background-color: alpha(@base, 0.85);
+}
+
+button {
+    background-color: @surface0;
+    color: @text;
+    border: 2px solid @surface1;
+    border-radius: 24px;
+    margin: 8px;
+    padding: 8px;
+    min-width: 60px;
+    min-height: 60px;
+    background-repeat: no-repeat;
+    background-position: center 35%;
+    background-size: 28px;
+    box-shadow: none;
+    transition: all 0.2s ease;
+}
+
+button:hover {
+    background-color: @surface1;
+    border-color: @flamingo;
+}
+
+button:focus {
+    background-color: @surface1;
+    border-color: @flamingo;
+    outline: none;
+}
+
+#lock {
+    background-image: image(url("/usr/share/wlogout/icons/lock.png"));
+}
+#lock:hover {
+    border-color: @blue;
+}
+
+#logout {
+    background-image: image(url("/usr/share/wlogout/icons/logout.png"));
+}
+#logout:hover {
+    border-color: @peach;
+}
+
+#suspend {
+    background-image: image(url("/usr/share/wlogout/icons/suspend.png"));
+}
+#suspend:hover {
+    border-color: @yellow;
+}
+
+#hibernate {
+    background-image: image(url("/usr/share/wlogout/icons/hibernate.png"));
+}
+#hibernate:hover {
+    border-color: @flamingo;
+}
+
+#shutdown {
+    background-image: image(url("/usr/share/wlogout/icons/shutdown.png"));
+}
+#shutdown:hover {
+    border-color: @red;
+}
+
+#reboot {
+    background-image: image(url("/usr/share/wlogout/icons/reboot.png"));
+}
+#reboot:hover {
+    border-color: @green;
+}

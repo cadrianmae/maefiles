@@ -1,0 +1,36 @@
+{
+    "label" : "lock",
+    "action" : "swaylock -f",
+    "text" : "Lock",
+    "keybind" : "l"
+}
+{
+    "label" : "logout",
+    "action" : "canberra-gtk-play -i desktop-logout && sleep 0.5 && niri msg action quit",
+    "text" : "Logout",
+    "keybind" : "e"
+}
+{
+    "label" : "suspend",
+    "action" : "canberra-gtk-play -i service-logout && systemctl suspend",
+    "text" : "Sleep",
+    "keybind" : "u"
+}
+{
+    "label" : "hibernate",
+    "action" : "canberra-gtk-play -i service-logout && systemctl hibernate",
+    "text" : "Hibernate",
+    "keybind" : "h"
+}
+{
+    "label" : "shutdown",
+    "action" : "canberra-gtk-play -i desktop-logout && sleep 0.5 && systemctl poweroff",
+    "text" : "Shutdown",
+    "keybind" : "s"
+}
+{
+    "label" : "reboot",
+    "action" : "canberra-gtk-play -i desktop-logout && sleep 0.5 && systemctl reboot",
+    "text" : "Reboot",
+    "keybind" : "r"
+}

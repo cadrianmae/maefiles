@@ -1,0 +1,95 @@
+* {
+    /* Catppuccin Macchiato */
+    base: #24273a;
+    surface0: #363a4f;
+    surface1: #494d64;
+    overlay0: #6e738d;
+    text: #cad3f5;
+    subtext0: #a5adcb;
+    flamingo: #f0c6c6;
+    pink: #f5bde6;
+    red: #ed8796;
+
+    background-color: transparent;
+    text-color: @text;
+}
+
+window {
+    width: 600px;
+    background-color: @base;
+    border: 2px solid;
+    border-color: @flamingo;
+    border-radius: 12px;
+    padding: 12px;
+}
+
+mainbox {
+    spacing: 12px;
+    children: [inputbar, message, listview];
+}
+
+inputbar {
+    background-color: @surface0;
+    border-radius: 8px;
+    padding: 8px 12px;
+    spacing: 8px;
+    children: [prompt, entry];
+}
+
+prompt {
+    text-color: @pink;
+}
+
+entry {
+    placeholder: "Search...";
+    placeholder-color: @overlay0;
+}
+
+message {
+    background-color: @surface0;
+    border-radius: 8px;
+    padding: 8px;
+}
+
+textbox {
+    text-color: @subtext0;
+}
+
+listview {
+    lines: 8;
+    columns: 1;
+    fixed-height: false;
+    spacing: 4px;
+}
+
+element {
+    padding: 8px 12px;
+    border-radius: 8px;
+    spacing: 12px;
+}
+
+element normal.normal {
+    background-color: transparent;
+}
+
+element alternate.normal {
+    background-color: transparent;
+}
+
+element selected.normal {
+    background-color: @pink;
+    text-color: @base;
+}
+
+element-icon {
+    size: 24px;
+}
+
+element-text {
+    vertical-align: 0.5;
+    highlight: bold;
+}
+
+element-text selected {
+    text-color: @base;
+}
