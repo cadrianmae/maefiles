@@ -10,15 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ludeeus/action-shellcheck@master
-        with:
-          severity: warning
-          # Exclude her pre-existing bin/ scripts adopted from Stow — they
-          # have known warnings not in scope for this migration. New scripts
-          # under bin/yadm-* + bin/render-env + bin/nvim-sync still get
-          # checked (explicitly re-added via additional_files).
-          ignore_paths: 'bin'
-          additional_files: >-
+      - name: shellcheck yadm-authored scripts
+        run: |
+          # Install shellcheck
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+
+          # Explicit list of files we author + maintain (not adopted from
+          # stow nor zsh-specific). shellcheck doesn't support zsh, and
+          # the adopted stow scripts have pre-existing warnings we're
+          # not touching as part of this migration.
+          files=(
+            install.sh
+            lib/runlib.sh
+            .config/yadm/bootstrap
+            .config/yadm/hooks/post_alt
+            .config/yadm/hooks/post_pull
+            .config/yadm/hooks/pre_commit
             bin/render-env
             bin/nvim-sync
             bin/yadm-audit
@@ -26,6 +34,19 @@ jobs:
             bin/yadm-discover
             bin/yadm-refresh-secrets
             bin/yadm-verify-encryption
+          )
+
+          fail=0
+          for f in "${files[@]}"; do
+            if [[ ! -f "$f" ]]; then
+              echo "::warning file=$f::missing, skipping"
+              continue
+            fi
+            if ! shellcheck --severity=warning --format=gcc "$f"; then
+              fail=1
+            fi
+          done
+          exit $fail
 
   gitleaks:
     runs-on: ubuntu-latest
