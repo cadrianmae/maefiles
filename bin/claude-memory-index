@@ -1,0 +1,82 @@
+#!/usr/bin/env bash
+# claude-memory-index — unified view of all per-project Claude memories.
+#
+# Claude Code scopes auto-memory per working directory:
+#   ~/.claude/projects/<sanitized-cwd>/memory/MEMORY.md
+# This script aggregates every MEMORY.md on disk into one browseable list.
+#
+# Usage:
+#   claude-memory-index              # tree view (project → entries)
+#   claude-memory-index --raw        # concatenated raw MEMORY.md files
+#   claude-memory-index --paths      # just the silo paths
+#   claude-memory-index --bat        # pipe through bat for highlighting
+
+set -euo pipefail
+
+MODE="tree"
+USE_BAT=0
+PROJECTS_DIR="$HOME/.claude/projects"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --raw)    MODE="raw" ;;
+    --paths)  MODE="paths" ;;
+    --bat)    USE_BAT=1 ;;
+    -h|--help)
+      sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+      exit 0
+      ;;
+    *) echo "[ERROR] unknown flag: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# Desanitise: -home-cadrianmae-foo → /home/cadrianmae/foo
+human_path() {
+  local sanitised="$1"
+  printf '/%s' "${sanitised#-}" | tr '-' '/' | sed 's|//*|/|g'
+}
+
+files=()
+while IFS= read -r f; do files+=("$f"); done < <(
+  find "$PROJECTS_DIR" -maxdepth 3 -name MEMORY.md -type f 2>/dev/null | sort
+)
+
+if [[ ${#files[@]} -eq 0 ]]; then
+  echo "[INFO] no MEMORY.md files found under $PROJECTS_DIR" >&2
+  exit 0
+fi
+
+render() {
+  case "$MODE" in
+    paths)
+      for f in "${files[@]}"; do
+        silo=$(dirname "$(dirname "$f")")
+        printf '%s\n' "$silo"
+      done
+      ;;
+    raw)
+      for f in "${files[@]}"; do
+        silo=$(basename "$(dirname "$(dirname "$f")")")
+        printf '=== %s — %s ===\n' "$(human_path "$silo")" "$f"
+        cat "$f"
+        echo
+      done
+      ;;
+    tree)
+      for f in "${files[@]}"; do
+        silo=$(basename "$(dirname "$(dirname "$f")")")
+        project=$(human_path "$silo")
+        entries=$(grep -c '^-' "$f" 2>/dev/null || echo 0)
+        printf '\n# %s  (%s entries)\n' "$project" "$entries"
+        grep '^-' "$f" 2>/dev/null || true
+      done
+      ;;
+  esac
+}
+
+if [[ $USE_BAT -eq 1 ]] && command -v bat >/dev/null; then
+  render | bat --paging=never --language=markdown --style=plain
+else
+  render
+fi
