@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# pre_commit — yadm hook that runs before every `yadm commit`.
+#
+# Purpose: last-ditch leak scan. Pre-commit (python package) already runs
+# gitleaks, but not everyone has it installed — this catches the gap.
+
+set -euo pipefail
+
+if command -v gitleaks >/dev/null 2>&1; then
+  if ! gitleaks protect --staged --no-banner --redact 2>&1; then
+    echo "[ERROR] gitleaks detected potential secrets in staged files" >&2
+    echo "        run 'gitleaks detect --source \$HOME' to investigate" >&2
+    exit 1
+  fi
+fi
+
+# Also run yadm-audit if available — fail commit on manifest drift
+if [[ -x "$HOME/bin/yadm-audit" ]]; then
+  "$HOME/bin/yadm-audit" >/dev/null 2>&1 || {
+    echo "[ERROR] yadm-audit failed — manifest/pass drift" >&2
+    "$HOME/bin/yadm-audit" >&2
+    exit 1
+  }
+fi
+
+# PII scan on staged files: fail if personal info is going into an
+# UNENCRYPTED path. Files in git-crypt scope (per .gitattributes) are
+# allowed to contain PII because the committed blob is ciphertext.
+if [[ -x "$HOME/bin/pii-scan" ]]; then
+  staged=$(yadm diff --cached --name-only --diff-filter=ACM 2>/dev/null || true)
+  if [[ -n "$staged" ]]; then
+    offenders=""
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      # Skip files in git-crypt scope — PII is OK there, it'll be encrypted
+      filter=$(yadm check-attr filter -- "$f" 2>/dev/null | awk -F': ' '{print $NF}')
+      [[ "$filter" == "git-crypt" ]] && continue
+      # Scan the file
+      if ! "$HOME/bin/pii-scan" "$HOME/$f" >/dev/null 2>&1; then
+        offenders="$offenders$f"$'\n'
+      fi
+    done <<<"$staged"
+    if [[ -n "$offenders" ]]; then
+      echo "[ERROR] PII detected in unencrypted staged files:" >&2
+      echo "$offenders" | sed 's/^/  /' >&2
+      echo "Either:" >&2
+      echo "  1. Scrub the PII, OR" >&2
+      echo "  2. Add the path to git-crypt scope in .gitattributes" >&2
+      exit 1
+    fi
+  fi
+fi

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# post_alt — yadm hook that runs after `yadm alt` resolves templates.
+#
+# Triggers:
+#   - yadm alt (direct)
+#   - yadm config local.class ...  (indirectly, via post_config)
+#   - hostname change
+#
+# What we do:
+#   1. Regenerate .env##template.esh from manifest.yaml
+#      (catches manifest changes that happened without rerunning render-env)
+#   2. Refresh .env itself via a second yadm alt pass if template changed
+
+set -euo pipefail
+
+[[ -x "$HOME/bin/render-env" ]] || exit 0
+
+# Regenerate template from manifest. --check would fail here if out of sync
+# so we unconditionally rewrite.
+"$HOME/bin/render-env" >/dev/null 2>&1 || true

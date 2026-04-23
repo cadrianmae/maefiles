@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# post_pull — yadm hook that runs after `yadm pull`.
+#
+# Purpose: auto-sync submodules so nvim config follows origin/main
+# transparently. No manual `yadm submodule update` ceremony needed.
+#
+# Uses --remote --merge so:
+#   --remote  follow the branch set in .gitmodules (nvim = main) rather
+#             than the pinned SHA
+#   --merge   merge local commits with upstream instead of detaching HEAD,
+#             so you can edit inside the submodule without ceremony
+
+set -euo pipefail
+
+if [[ -f "$HOME/.gitmodules" ]]; then
+  yadm submodule update --init --remote --merge 2>&1 || \
+    printf '[WARN] submodule update failed — run manually: yadm submodule update --init --remote --merge\n' >&2
+fi

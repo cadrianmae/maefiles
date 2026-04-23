@@ -1,0 +1,30 @@
+# pre-commit config — hooks run on every `yadm commit`
+# Install once:  pre-commit install
+
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.0
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/koalaman/shellcheck-precommit
+    rev: v0.10.0
+    hooks:
+      - id: shellcheck
+
+  - repo: local
+    hooks:
+      - id: yadm-audit
+        name: manifest ↔ pass alignment
+        entry: bin/yadm-audit
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]
+
+      - id: render-env-check
+        name: .env template up-to-date with manifest
+        entry: bin/render-env --check
+        language: system
+        pass_filenames: false
+        files: ^docs/secret/manifest\.yaml$
+        stages: [pre-commit]

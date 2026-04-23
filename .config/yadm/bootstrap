@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# maefiles — yadm bootstrap
+#
+# Runs after `yadm clone`. Idempotent: safe to re-run.
+#
+# Flow:
+#   1. Initialise pass if missing (pass init <gpg-id>)
+#   2. Retrieve BWS access token from personal bw vault (one interactive unlock)
+#   3. bws secret list → JSON index
+#   4. For each manifest entry: bws secret get → pass insert (skip if present)
+#   5. Render .env template via bin/render-env
+#   6. yadm alt (render all ##template.esh files)
+#   7. yadm decrypt (unwrap SSH keys etc.)
+#   8. Prompt for machine class if not set
+
+set -euo pipefail
+
+# shellcheck source=/dev/null
+source "$HOME/lib/runlib.sh"
+
+MANIFEST="$HOME/docs/secret/manifest.yaml"
+
+# BW_TOKEN_ITEM resolved AFTER class is known (step 1). Don't set here.
+# Convention: "BWS Access Token - <hostname>-<class>" (e.g. cadrianmae-personal).
+# Override with env BW_TOKEN_ITEM=... or yadm config local.bws.token-item
+DRY_RUN="${DRY_RUN:-0}"
+FORCE_ALL=0
+ONLY_MATCH=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dry-run) DRY_RUN=1 ;;
+    --all)     FORCE_ALL=1 ;;
+    --only)    ONLY_MATCH="$2"; shift ;;
+    *) error "unknown flag: $1"; exit 1 ;;
+  esac
+  shift
+done
+export DRY_RUN
+
+# --- sanity -----------------------------------------------------------------
+[[ -f "$MANIFEST" ]] || { error "manifest missing: $MANIFEST"; exit 1; }
+require yq    || { error "install 'yq' (pip install yq OR Go yq)"; exit 1; }
+require jq    || exit 1
+require pass  || exit 1
+require bw    || exit 1
+require bws   || exit 1
+
+# --- 1. Machine class -------------------------------------------------------
+step "1/8  machine class"
+CLASS=$(yadm config local.class 2>/dev/null || true)
+if [[ -z "$CLASS" ]]; then
+  read -rp "Machine class [personal/work]: " CLASS
+  CLASS="${CLASS:-personal}"
+  run yadm config local.class "$CLASS"
+else
+  info "class already set: $CLASS"
+fi
+
+# Resolve BW vault item name now that class is known.
+if [[ -z "${BW_TOKEN_ITEM:-}" ]]; then
+  BW_TOKEN_ITEM=$(yadm config local.bws.token-item 2>/dev/null || echo "BWS Access Token - $(hostname -s)-$CLASS")
+fi
+info "will look up bw vault item: '$BW_TOKEN_ITEM'"
+
+# --- 2. Initialise pass -----------------------------------------------------
+step "2/8  pass init (if needed)"
+if [[ ! -d "$HOME/.password-store" ]]; then
+  GPG_ID=$(gpg --list-secret-keys --with-colons | awk -F: '/^sec/{print $5; exit}')
+  [[ -n "$GPG_ID" ]] || { error "no GPG secret key"; exit 1; }
+  run pass init "$GPG_ID"
+else
+  info "pass store already initialised"
+fi
+
+# --- 3. Retrieve BWS access token from personal bw vault --------------------
+step "3/8  fetch BWS access token from bw vault"
+if [[ -z "${BWS_ACCESS_TOKEN:-}" ]]; then
+  info "unlocking personal bw vault to retrieve BWS token..."
+  if ! bw login --check >/dev/null 2>&1; then
+    run bw login
+  fi
+  BW_SESSION=$(bw unlock --raw)
+  export BW_SESSION
+  run bw sync
+  BWS_ACCESS_TOKEN=$(bw get password "$BW_TOKEN_ITEM" 2>/dev/null) || {
+    error "item not found in bw vault: '$BW_TOKEN_ITEM'"
+    error "create it with your BWS access token as the password field."
+    bw lock; exit 1
+  }
+  export BWS_ACCESS_TOKEN
+  run bw lock
+  unset BW_SESSION
+  ok "BWS access token retrieved; bw vault re-locked"
+fi
+
+# --- 4. BWS secret index ----------------------------------------------------
+step "4/8  list BWS secrets"
+BWS_INDEX=$(mktemp)
+trap 'rm -f "$BWS_INDEX"' EXIT
+if ! bws secret list --output json >"$BWS_INDEX" 2>/dev/null; then
+  error "bws secret list failed — token invalid or network issue"
+  exit 1
+fi
+SECRET_COUNT=$(jq 'length' "$BWS_INDEX")
+info "$SECRET_COUNT secrets visible to this machine account"
+
+# --- 5. Seed pass from manifest ---------------------------------------------
+step "5/8  seed pass from BWS"
+MANIFEST_JSON=$(yq -o=json '.secrets[]' "$MANIFEST" | jq -s '.')
+COUNT=$(jq 'length' <<<"$MANIFEST_JSON")
+
+for i in $(seq 0 $((COUNT - 1))); do
+  entry=$(jq ".[$i]" <<<"$MANIFEST_JSON")
+  env_name=$(jq -r '.env'  <<<"$entry")
+  pass_path=$(jq -r '.pass' <<<"$entry")
+  bws_name=$(jq -r '.bws'  <<<"$entry")
+
+  # Unquoted RHS is intentional: ONLY_MATCH supports glob patterns like 'api/*'
+  # shellcheck disable=SC2053
+  if [[ -n "$ONLY_MATCH" && "$pass_path" != $ONLY_MATCH && "$env_name" != $ONLY_MATCH ]]; then
+    continue
+  fi
+
+  if [[ $FORCE_ALL -eq 0 ]] && pass show "$pass_path" >/dev/null 2>&1; then
+    info "pass/$pass_path already exists — skipping"
+    continue
+  fi
+
+  secret_id=$(jq -r --arg name "$bws_name" '.[] | select(.key == $name) | .id' "$BWS_INDEX")
+  if [[ -z "$secret_id" ]]; then
+    warn "BWS secret '$bws_name' not found — skipping"
+    continue
+  fi
+  value=$(bws secret get "$secret_id" --output json | jq -r '.value')
+  if [[ "$DRY_RUN" -eq 1 ]]; then
+    info "[dry-run] would write pass/$pass_path ($env_name)"
+  else
+    printf '%s' "$value" | pass insert -m -f "$pass_path" >/dev/null
+    ok "seeded pass/$pass_path from bws:$bws_name"
+  fi
+done
+
+# --- 6. Render .env template -----------------------------------------------
+step "6/8  render .env template from manifest"
+run "$HOME/bin/render-env"
+
+# --- 7. yadm alt -----------------------------------------------------------
+step "7/8  yadm alt"
+run yadm alt
+
+# --- 8. yadm decrypt -------------------------------------------------------
+step "8/8  yadm decrypt"
+run yadm decrypt || warn "yadm decrypt failed or nothing to decrypt"
+
+# Clear stale flag if present
+rm -f "$HOME/.cache/yadm-secrets-stale" 2>/dev/null || true
+
+ok "bootstrap complete"

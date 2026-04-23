@@ -1,0 +1,9 @@
+# yadm config defaults
+# Machine-local overrides go in ~/.config/yadm/local.conf (not tracked)
+
+[yadm]
+	# Use GPG (not OpenSSL) for `yadm encrypt`
+	cipher = gpg
+	# Use asymmetric encryption — so we can push the archive publicly (if ever)
+	# and only machines with the recipient key can decrypt
+	# gpg-recipient = <your-key-id>    # uncomment and set on first machine

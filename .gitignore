@@ -1,0 +1,24 @@
+# Rendered secret files — never commit
+.env
+.env##template.esh
+
+# Generic tool caches / state
+.cache/
+*.tmp
+*.swp
+
+# yadm's own archive lives here after `yadm encrypt` — tracked, but the
+# unencrypted working copies must never be
+.local/share/yadm/archive/
+
+# Rendered outputs from render-env
+bin/.render-env-out
+
+# Staleness flag (ephemeral)
+.cache/yadm-secrets-stale
+
+# .claude/ has its own git repo (local-only, not yet pushed).
+# Future: publish as cadrianmae/claude-config private repo after PII cleanup,
+# then add here as a submodule. See docs/decisions/003-claude-config-deferred.md
+# and docs/runbooks/publish-claude-config.md.
+.claude/
