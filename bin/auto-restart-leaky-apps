@@ -1,0 +1,62 @@
+#!/bin/bash
+# Automatically restart Zen/Obsidian when they exceed memory thresholds
+
+ZEN_THRESHOLD_MB=2500
+OBSIDIAN_THRESHOLD_MB=2000
+
+restart_zen() {
+    echo "🔄 Restarting Zen browser (memory exceeded ${ZEN_THRESHOLD_MB}MB)..."
+
+    # Save current tabs (if possible)
+    # Zen/Firefox should auto-restore sessions
+
+    pkill -f "zen/zen"
+    sleep 2
+
+    # Relaunch Zen
+    if [[ -x "$HOME/.tarball-installations/zen/zen" ]]; then
+        nohup "$HOME/.tarball-installations/zen/zen" > /dev/null 2>&1 &
+        echo "✅ Zen restarted"
+    fi
+}
+
+restart_obsidian() {
+    echo "🔄 Restarting Obsidian (memory exceeded ${OBSIDIAN_THRESHOLD_MB}MB)..."
+
+    pkill -f "obsidian"
+    sleep 2
+
+    # Relaunch Obsidian with last vault
+    if command -v obsidian &> /dev/null; then
+        nohup obsidian > /dev/null 2>&1 &
+        echo "✅ Obsidian restarted"
+    fi
+}
+
+# Check Zen
+ZEN_TOTAL=0
+for pid in $(pgrep -f "zen/zen"); do
+    mem=$(ps -o rss= -p $pid 2>/dev/null)
+    [[ -n "$mem" ]] && ZEN_TOTAL=$((ZEN_TOTAL + mem))
+done
+ZEN_MB=$((ZEN_TOTAL / 1024))
+
+if [[ $ZEN_MB -gt $ZEN_THRESHOLD_MB ]]; then
+    restart_zen
+else
+    echo "✅ Zen: ${ZEN_MB}MB (threshold: ${ZEN_THRESHOLD_MB}MB)"
+fi
+
+# Check Obsidian
+OBSIDIAN_TOTAL=0
+for pid in $(pgrep -f "obsidian"); do
+    mem=$(ps -o rss= -p $pid 2>/dev/null)
+    [[ -n "$mem" ]] && OBSIDIAN_TOTAL=$((OBSIDIAN_TOTAL + mem))
+done
+OBSIDIAN_MB=$((OBSIDIAN_TOTAL / 1024))
+
+if [[ $OBSIDIAN_MB -gt $OBSIDIAN_THRESHOLD_MB ]]; then
+    restart_obsidian
+else
+    echo "✅ Obsidian: ${OBSIDIAN_MB}MB (threshold: ${OBSIDIAN_THRESHOLD_MB}MB)"
+fi

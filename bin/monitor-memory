@@ -1,0 +1,40 @@
+#!/bin/bash
+# Monitor memory usage over time to identify leaks
+
+LOG_FILE="$HOME/.cache/memory-monitor-$(date +%Y-%m-%d).log"
+WATCH_PROCESSES=("zen" "obsidian" "copilot" "discord" "spotify" "plasmashell")
+
+echo "=== Memory Monitor Started: $(date) ===" | tee -a "$LOG_FILE"
+echo "Monitoring processes: ${WATCH_PROCESSES[*]}" | tee -a "$LOG_FILE"
+echo "Log file: $LOG_FILE"
+echo ""
+
+# Function to log memory usage
+log_memory() {
+    echo "" >> "$LOG_FILE"
+    echo "--- $(date +"%Y-%m-%d %H:%M:%S") ---" >> "$LOG_FILE"
+
+    # Overall memory
+    free -h >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+
+    # Top processes
+    ps aux --sort=-%mem | head -15 >> "$LOG_FILE"
+    echo "" >> "$LOG_FILE"
+}
+
+# If run with --once flag, log once and exit
+if [[ "$1" == "--once" ]]; then
+    log_memory
+    exit 0
+fi
+
+# Otherwise, monitor continuously
+echo "Logging memory every 5 minutes. Press Ctrl+C to stop."
+echo "Use 'tail -f $LOG_FILE' to watch in real-time"
+echo ""
+
+while true; do
+    log_memory
+    sleep 300  # 5 minutes
+done

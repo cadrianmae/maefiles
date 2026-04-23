@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# yadm-check-staleness — check pass entries against per-secret TTL in manifest
+#
+# Non-destructive. Used by:
+#   - systemd user timer (daily) — writes stale list to ~/.cache/yadm-secrets-stale
+#   - yadm-refresh-secrets (before prompting for bw unlock)
+#   - manual invocation
+#
+# Exit code:
+#   0 — all entries within TTL
+#   1 — one or more stale
+#
+# Flags:
+#   --notify  Write stale list + send desktop notification
+#   --quiet   No output if nothing stale
+
+set -euo pipefail
+
+MANIFEST="$HOME/docs/secret/manifest.yaml"
+STALE_FLAG="$HOME/.cache/yadm-secrets-stale"
+NOTIFY=0
+QUIET=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --notify) NOTIFY=1 ;;
+    --quiet)  QUIET=1 ;;
+    *) echo "[ERROR] unknown flag: $1" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+[[ -f "$MANIFEST" ]] || { echo "[ERROR] manifest missing: $MANIFEST" >&2; exit 1; }
+command -v yq >/dev/null || { echo "[ERROR] yq required" >&2; exit 1; }
+
+mkdir -p "$(dirname "$STALE_FLAG")"
+
+now=$(date +%s)
+stale=()
+
+# ttl format: "7d", "30d", "12h", "never"
+ttl_to_seconds() {
+  local t="$1"
+  case "$t" in
+    never) echo ""; return ;;
+    *d) echo $(( ${t%d} * 86400 )) ;;
+    *h) echo $(( ${t%h} * 3600 )) ;;
+    *m) echo $(( ${t%m} * 60 )) ;;
+    *)  echo ""; return 1 ;;
+  esac
+}
+
+while IFS=$'\t' read -r env pass_path ttl; do
+  secs=$(ttl_to_seconds "$ttl") || { echo "[WARN] bad ttl '$ttl' for $env" >&2; continue; }
+  [[ -z "$secs" ]] && continue  # "never"
+
+  file="$HOME/.password-store/$pass_path.gpg"
+  if [[ ! -f "$file" ]]; then
+    stale+=("$env (pass/$pass_path missing)")
+    continue
+  fi
+  mtime=$(stat -c %Y "$file")
+  age=$((now - mtime))
+  if (( age > secs )); then
+    stale+=("$env (age=${age}s > ttl=${secs}s)")
+  fi
+done < <(yq -r '.secrets[] | [.env, .pass, .ttl] | @tsv' "$MANIFEST")
+
+if [[ ${#stale[@]} -eq 0 ]]; then
+  rm -f "$STALE_FLAG"
+  [[ $QUIET -eq 1 ]] || echo "[OK] all secrets fresh"
+  exit 0
+fi
+
+# Write stale list
+printf '%s\n' "${stale[@]}" > "$STALE_FLAG"
+
+if [[ $NOTIFY -eq 1 ]] && command -v notify-send >/dev/null 2>&1; then
+  notify-send -u normal "maefiles — secrets stale" \
+    "${#stale[@]} entries need resync. Run: yadm-refresh-secrets" || true
+fi
+
+[[ $QUIET -eq 1 ]] || {
+  echo "[STALE] ${#stale[@]} entries:"
+  printf '  - %s\n' "${stale[@]}"
+  echo
+  echo "Run: yadm-refresh-secrets"
+}
+exit 1

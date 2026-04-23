@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# OAuth-injecting Claude wrapper.
+#
+# Note: --bare is intentionally omitted — bare mode explicitly disables OAuth
+# (auth.ts isBareMode() returns null from getClaudeAIOAuthTokens before the
+# CLAUDE_CODE_OAUTH_TOKEN env var is ever checked).
+#
+# For non-interactive use, pass flags directly:
+#   claude-bare -p "summarise this file" --output-format json
+#   claude-bare -p "fix the bug" --allowedTools Edit,Read
+
+TOKEN=$(jq -r '.claudeAiOauth.accessToken' ~/.claude/.credentials.json 2>/dev/null)
+
+if [[ -z "$TOKEN" || "$TOKEN" == "null" ]]; then
+  echo "claude-bare: no OAuth token found in ~/.claude/.credentials.json" >&2
+  exit 1
+fi
+
+CLAUDE_CODE_OAUTH_TOKEN="$TOKEN" exec claude "$@"

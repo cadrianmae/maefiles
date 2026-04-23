@@ -1,0 +1,175 @@
+#!/usr/bin/env bash
+# Claude Code usage fetcher
+#
+# Usage:
+#   claude-usage-status          # pretty terminal output
+#   claude-usage-status --json   # raw JSON for tmux2k plugin
+
+CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-usage.cache"
+PROFILE_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/claude-profile.cache"
+CACHE_TTL=300
+PROFILE_TTL=86400
+MODE="${1:-text}"
+
+now=$(date +%s)
+
+TOKEN=$(jq -r '.claudeAiOauth.accessToken' ~/.claude/.credentials.json 2>/dev/null)
+[[ -z "$TOKEN" || "$TOKEN" == "null" ]] && exit 0
+
+# Fetch usage if stale
+if [[ ! -f "$CACHE_FILE" ]] || (( now - $(stat -c %Y "$CACHE_FILE") >= CACHE_TTL )); then
+  DATA=$(curl -s --max-time 4 \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    https://api.anthropic.com/api/oauth/usage 2>/dev/null)
+  [[ -z "$DATA" ]] && exit 0
+  echo "$DATA" | jq '{
+    session:        (.five_hour.utilization        // 0 | round),
+    session_resets: (.five_hour.resets_at          // null),
+    week:           (.seven_day.utilization        // 0 | round),
+    week_resets:    (.seven_day.resets_at          // null),
+    sonnet:         (.seven_day_sonnet.utilization // 0 | round),
+    overage:        (.extra_usage.utilization      // 0 | . * 10 | round / 10),
+    overage_used:   (.extra_usage.used_credits     // 0 | . / 100 | . * 100 | round / 100),
+    overage_limit:  (.extra_usage.monthly_limit    // 0 | . / 100 | round)
+  }' > "$CACHE_FILE" 2>/dev/null
+fi
+
+# Fetch profile if stale
+if [[ ! -f "$PROFILE_CACHE" ]] || (( now - $(stat -c %Y "$PROFILE_CACHE") >= PROFILE_TTL )); then
+  PROFILE=$(curl -s --max-time 4 \
+    -H "Authorization: Bearer $TOKEN" \
+    -H "anthropic-beta: oauth-2025-04-20" \
+    https://api.anthropic.com/api/oauth/profile 2>/dev/null)
+  [[ -n "$PROFILE" ]] && echo "$PROFILE" | jq '{
+    name: .account.display_name,
+    plan: .organization.organization_type,
+    tier: (.organization.rate_limit_tier | split("_") | last | rtrimstr("x"))
+  }' > "$PROFILE_CACHE" 2>/dev/null
+fi
+
+[[ ! -f "$CACHE_FILE" ]] && exit 0
+
+if [[ "$MODE" == "--json" ]]; then
+  cat "$CACHE_FILE"
+  exit 0
+fi
+
+# ── ANSI ─────────────────────────────────────────────────────
+R=$'\e[0m'
+B=$'\e[1m'
+DIM=$'\e[2m'
+RED=$'\e[31m'
+GRN=$'\e[32m'
+YLW=$'\e[33m'
+ORG=$'\e[38;5;208m'
+CYN=$'\e[36m'
+
+# ── Layout ───────────────────────────────────────────────────
+INNER=64   # visual width between the two │ chars
+BAR_W=26
+LABEL_W=14
+# row content: 2(indent) + LABEL_W + BAR_W + 1(sp) + 4(pct) + 2(sp) + INFO_W = INNER
+INFO_W=$(( INNER - 2 - LABEL_W - BAR_W - 1 - 4 - 2 ))
+
+# ── Helpers ──────────────────────────────────────────────────
+hline() {
+  local l="$1" r="$2" c="$3"
+  printf '%s' "$l"
+  printf '%.0s'"$c" $(seq 1 "$INNER")
+  printf '%s\n' "$r"
+}
+
+blank() {
+  printf '│%*s│\n' "$INNER" ""
+}
+
+color_for() {
+  local p=$1
+  if   (( p >= 90 )); then printf '%s' "$RED"
+  elif (( p >= 75 )); then printf '%s' "$ORG"
+  elif (( p >= 50 )); then printf '%s' "$YLW"
+  else                     printf '%s' "$GRN"
+  fi
+}
+
+bar() {
+  local pct=$1 filled empty col
+  filled=$(( pct * BAR_W / 100 ))
+  empty=$(( BAR_W - filled ))
+  col=$(color_for "$pct")
+  printf '%s' "$col"
+  [[ $filled -gt 0 ]] && printf '%.0s█' $(seq 1 "$filled")
+  printf '%s' "$DIM"
+  [[ $empty  -gt 0 ]] && printf '%.0s░' $(seq 1 "$empty")
+  printf '%s' "$R"
+}
+
+draw_row() {
+  local label="$1" pct="$2" info="$3"
+  local col; col=$(color_for "$pct")
+  printf '│  %-*s' "$LABEL_W" "$label"
+  bar "$pct"
+  printf " ${col}%3d%%${R}  %-*s│\n" "$pct" "$INFO_W" "$info"
+}
+
+format_reset() {
+  local ts="$1"
+  [[ -z "$ts" || "$ts" == "null" ]] && return
+  local target; target=$(date -d "$ts" +%s 2>/dev/null) || return
+  local diff=$(( target - now ))
+  if   (( diff < 3600  )); then printf 'in %dm'     $(( diff / 60 ))
+  elif (( diff < 86400 )); then printf 'in %dh %dm' $(( diff / 3600 )) $(( (diff % 3600) / 60 ))
+  else                          printf '%s'          "$(date -d "$ts" '+%a %d %b')"
+  fi
+}
+
+# ── Read data ────────────────────────────────────────────────
+SESSION=$(jq -r '.session'              "$CACHE_FILE")
+SESSION_RESETS=$(jq -r '.session_resets // ""' "$CACHE_FILE")
+WEEK=$(jq -r '.week'                    "$CACHE_FILE")
+WEEK_RESETS=$(jq -r '.week_resets // ""' "$CACHE_FILE")
+SONNET=$(jq -r '.sonnet'                "$CACHE_FILE")
+OVERAGE=$(jq -r '.overage | round'      "$CACHE_FILE")
+OVERAGE_USED=$(jq -r '.overage_used'    "$CACHE_FILE")
+OVERAGE_LIMIT=$(jq -r '.overage_limit'  "$CACHE_FILE")
+
+NAME="" PLAN="" TIER=""
+if [[ -f "$PROFILE_CACHE" ]]; then
+  NAME=$(jq -r '.name // ""' "$PROFILE_CACHE")
+  PLAN=$(jq -r '.plan // ""' "$PROFILE_CACHE" | tr '_' ' ')
+  TIER=$(jq -r '.tier // ""' "$PROFILE_CACHE")
+fi
+
+SESSION_INFO=$(format_reset "$SESSION_RESETS")
+WEEK_INFO=$(format_reset "$WEEK_RESETS")
+OVERAGE_INFO="\$${OVERAGE_USED} of \$${OVERAGE_LIMIT}"
+
+# ── Header ───────────────────────────────────────────────────
+SUBTITLE=""
+[[ -n "$NAME" ]] && SUBTITLE="$NAME"
+[[ -n "$PLAN" ]] && SUBTITLE="${SUBTITLE:+$SUBTITLE · }$PLAN${TIER:+ (${TIER}x)}"
+TITLE=" Claude Code${SUBTITLE:+  ·  $SUBTITLE} "
+TITLE_LEN=${#TITLE}
+LEFT=$(( (INNER - TITLE_LEN) / 2 ))
+RIGHT=$(( INNER - TITLE_LEN - LEFT ))
+
+printf '╭'
+printf '%.0s─' $(seq 1 "$LEFT")
+printf "${B}${CYN}%s${R}" "$TITLE"
+printf '%.0s─' $(seq 1 "$RIGHT")
+printf '╮\n'
+
+# ── Rate limits ──────────────────────────────────────────────
+blank
+draw_row "Session (5h)" "$SESSION" "$SESSION_INFO"
+draw_row "Weekly"       "$WEEK"    "$WEEK_INFO"
+[[ "$SONNET" -gt 0 ]] && draw_row "Sonnet (7d)" "$SONNET" ""
+blank
+
+# ── Overage ──────────────────────────────────────────────────
+hline '├' '┤' '─'
+blank
+draw_row "Overage" "$OVERAGE" "$OVERAGE_INFO"
+blank
+hline '╰' '╯' '─'

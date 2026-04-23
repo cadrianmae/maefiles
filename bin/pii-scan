@@ -1,0 +1,172 @@
+#!/usr/bin/env bash
+# pii-scan: skip
+# pii-scan — grep for personally identifiable information in files or dirs.
+#
+# Usage:
+#   pii-scan <path> [<path> ...]
+#   pii-scan --all                 # scan every yadm-tracked file
+#   pii-scan --staged              # scan yadm-staged changes only (pre-commit)
+#
+# Patterns tuned for Mae; extend via a git-crypted custom file at
+# ~/docs/secret/pii-patterns.txt — one ERE pattern per line, # for comments.
+#
+# Exit code:
+#   0  no matches
+#   1  matches found (prints them, redacted)
+#   2  usage error
+
+set -euo pipefail
+
+MODE="paths"
+EXTRA_PATTERNS="$HOME/docs/secret/pii-patterns.txt"
+
+# Built-in patterns
+# Tune here for false-positive rate. Each entry: NAME|PATTERN
+# Known-safe patterns (never flagged even if they match a rule above).
+# Mostly machine/service identifiers that look like PII but aren't.
+SAFE_PATTERNS=(
+  # Git hosting SSH URLs
+  'git@github\.com'
+  'git@gitlab\.com'
+  'git@bitbucket\.org'
+  '[a-zA-Z0-9._+-]+@users\.noreply\.github\.com'
+  'noreply@[a-zA-Z0-9.-]+'
+  # Example / placeholder patterns
+  'example@[a-zA-Z0-9.-]+'
+  '.*@example\.(com|org|net|ta)'
+  'vader@[a-zA-Z0-9.-]+'
+  'user@[a-zA-Z0-9.-]+'
+  'foo@[a-zA-Z0-9.-]+'
+  # Systemd unit names (look like emails due to user@scope syntax)
+  '[a-zA-Z][a-zA-Z0-9._-]*@[a-zA-Z0-9._-]+\.(service|target|timer|socket|mount|slice|scope|path|device)'
+  # Fake TLDs used in RFC 2606 / 6761 examples
+  '.*@[a-zA-Z0-9.-]+\.(local|test|invalid|localhost)'
+)
+
+PATTERNS=(
+  'TU-Dublin-student|[Cc][0-9]{8}'
+  'email|[a-zA-Z0-9_][a-zA-Z0-9._+%-]*@[a-zA-Z0-9][a-zA-Z0-9.-]*\.[a-zA-Z]{2,}'
+  'IE-phone|\+353[ -][0-9]{1,2}[ -][0-9]{3,4}[ -]?[0-9]{3,4}'
+  'IE-mobile|08[3-9][ -]?[0-9]{3}[ -]?[0-9]{4}'
+  'UK-phone|\+44[ -][0-9]{4,5}[ -][0-9]{5,6}'
+  'IE-eircode|[ADEHK-NP-TVWXY][0-9]{2}[ ][A-HK-NP-Z0-9]{4}'
+  'UK-postcode|[A-Z]{1,2}[0-9][A-Z0-9]?[ ][0-9][A-Z]{2}'
+  'IBAN|(IE|GB|DE|FR|ES|IT|NL|BE|AT|LU|PT|CH)[0-9]{2}[A-Z0-9]{10,30}'
+  'credit-card|4[0-9]{15}|5[1-5][0-9]{14}|3[47][0-9]{13}'
+  'legal-name|Mae[ ]|,?[ ]Mae'
+  'health-keyword|ADHD|autism|autistic|Asperger|(prescri|medicat)[a-z]+|diagnosis|therapist'
+  'IE-PPS|[0-9]{7}[A-Z]{1,2}'
+)
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all)     MODE="all" ;;
+    --staged)  MODE="staged" ;;
+    -h|--help) sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --)        shift; break ;;
+    -*)        echo "unknown flag: $1" >&2; exit 2 ;;
+    *)         break ;;
+  esac
+  shift
+done
+
+# Assemble file list
+files=()
+case "$MODE" in
+  paths)
+    (( $# > 0 )) || { echo "pii-scan: no path given (use --all or --staged)" >&2; exit 2; }
+    for p in "$@"; do
+      if [[ -d "$p" ]]; then
+        while IFS= read -r f; do files+=("$f"); done < <(find "$p" -type f \
+          ! -path '*/.git/*' ! -path '*/node_modules/*' ! -path '*/.cache/*' \
+          ! -name '*.bin' ! -name '*.jpg' ! -name '*.png' ! -name '*.wav' \
+          ! -name '*.mp3' ! -name '*.mp4' ! -name '*.zip' ! -name '*.gz' 2>/dev/null)
+      elif [[ -f "$p" ]]; then
+        files+=("$p")
+      fi
+    done
+    ;;
+  all)
+    while IFS= read -r f; do files+=("$HOME/$f"); done < <(yadm ls-files 2>/dev/null)
+    ;;
+  staged)
+    while IFS= read -r f; do files+=("$HOME/$f"); done < <(yadm diff --cached --name-only 2>/dev/null)
+    ;;
+esac
+
+(( ${#files[@]} > 0 )) || { echo "[OK] nothing to scan"; exit 0; }
+
+# Load extra patterns if the file exists (git-crypted)
+extra_patterns=()
+if [[ -f "$EXTRA_PATTERNS" ]]; then
+  while IFS= read -r line; do
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    extra_patterns+=("$line")
+  done < "$EXTRA_PATTERNS"
+fi
+
+# Redact helper: keep first 2 + last 2 chars, blank the middle
+redact() {
+  local s="$1" n=${#1}
+  if (( n <= 4 )); then
+    printf '%s' "****"
+  else
+    printf '%s%s%s' "${s:0:2}" "$(printf '*%.0s' $(seq 1 $((n-4))))" "${s: -2}"
+  fi
+}
+
+FAIL=0
+declare -A HITS=()
+
+scan_file() {
+  local f="$1"
+  # Binary-skip by checking if the first chunk contains nulls
+  head -c 2048 "$f" 2>/dev/null | grep -qz '' || return 0
+  # Pragma-skip: files containing `pii-scan: skip` in the first 100 lines
+  # self-exempt (e.g. this script, which contains pattern names as literals).
+  head -100 "$f" 2>/dev/null | grep -q 'pii-scan: skip' && return 0
+  local line_no matches
+  while IFS=: read -r line_no line; do
+    [[ -z "$line" ]] && continue
+    for entry in "${PATTERNS[@]}" "${extra_patterns[@]}"; do
+      local name="${entry%%|*}" pattern="${entry#*|}"
+      if echo "$line" | grep -qE "$pattern"; then
+        matches=$(echo "$line" | grep -oE "$pattern" | head -1)
+        # Skip known-safe patterns (false-positive filter)
+        local safe=0
+        for sp in "${SAFE_PATTERNS[@]}"; do
+          if echo "$matches" | grep -qE "^${sp}$"; then
+            safe=1
+            break
+          fi
+        done
+        [[ $safe -eq 1 ]] && continue
+        redacted=$(redact "$matches")
+        HITS["$f:$line_no:$name"]="$redacted"
+        FAIL=1
+      fi
+    done
+  done < <(grep -nI '' "$f" 2>/dev/null)
+}
+
+for f in "${files[@]}"; do
+  [[ -f "$f" ]] || continue
+  scan_file "$f"
+done
+
+if [[ $FAIL -eq 0 ]]; then
+  echo "[OK] no PII patterns found across ${#files[@]} files"
+  exit 0
+fi
+
+# Report grouped by file
+echo "[PII] matches found (values redacted):"
+for key in "${!HITS[@]}"; do
+  f="${key%%:*}"
+  rest="${key#*:}"
+  line="${rest%%:*}"
+  category="${rest#*:}"
+  printf "  %s:%s  [%s]  %s\n" "${f#$HOME/}" "$line" "$category" "${HITS[$key]}"
+done | sort
+
+exit 1

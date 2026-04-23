@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# yadm-verify-encryption — confirm git-crypt scope actually covers secrets
+#
+# Locks git-crypt, scans the working tree for secret patterns, then unlocks.
+# If any matches found, fails: something is committed plaintext that shouldn't be.
+
+set -euo pipefail
+
+# shellcheck source=/dev/null
+source "$HOME/lib/runlib.sh"
+
+cd "$HOME"
+
+# shellcheck disable=SC2329  # invoked via trap below
+restore() {
+  run yadm git-crypt unlock >/dev/null 2>&1 || warn "could not re-unlock git-crypt — run manually"
+}
+trap restore EXIT
+
+step "locking git-crypt"
+run yadm git-crypt lock
+
+step "scanning for plaintext secrets"
+
+FAIL=0
+
+# 1. docs/secret/** should be unreadable (gibberish) when locked
+for f in docs/secret/*.md docs/secret/*.yaml docs/secret/*.yml; do
+  [[ -f "$f" ]] || continue
+  if file "$f" 2>/dev/null | grep -q "ASCII text"; then
+    error "$f is plaintext while git-crypt locked — NOT in crypt scope"
+    FAIL=1
+  fi
+done
+
+# 2. gitleaks pass against whole tracked set
+if command -v gitleaks >/dev/null; then
+  if ! gitleaks detect --no-git --source "$HOME" --exit-code 1 \
+      --report-path /tmp/gitleaks-report.json 2>/dev/null; then
+    error "gitleaks found secrets in unencrypted files:"
+    jq -r '.[] | "  \(.File):\(.StartLine) — \(.RuleID)"' /tmp/gitleaks-report.json 2>/dev/null \
+      | head -20 >&2
+    FAIL=1
+  fi
+fi
+
+if [[ $FAIL -eq 0 ]]; then
+  ok "encryption coverage verified — no plaintext secrets while locked"
+else
+  error "encryption gap found"
+fi
+
+exit $FAIL

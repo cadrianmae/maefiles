@@ -1,0 +1,18 @@
+#!/bin/bash
+# Quick memory relief script
+
+echo "🧹 Freeing memory..."
+
+# Kill copilot language server (will auto-restart)
+pkill -f copilot.*language-server && echo "✅ Restarted Copilot language server"
+
+# Clear system caches
+sync && echo 3 | sudo tee /proc/sys/vm/drop_caches > /dev/null && echo "✅ Cleared system caches"
+
+# Show before/after
+free -h
+
+echo ""
+echo "💡 Consider manually restarting:"
+echo "   - Zen browser (about:performance to find heavy tabs)"
+echo "   - Obsidian (File → Quit and reopen)"

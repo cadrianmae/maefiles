@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+# cc-ask — Claude-powered shell command suggestion and explanation
+# Usage:
+#   cc-ask suggest "list all docker containers including stopped"
+#   cc-ask explain "find . -mtime +7 -delete"
+#   cc-ask tldr tar
+#   cc-ask "natural language query"   # defaults to suggest
+
+set -euo pipefail
+
+MODE="suggest"
+QUERY=""
+
+# Parse arguments
+if [[ $# -eq 0 ]]; then
+  echo "Usage: cc-ask [suggest|explain|tldr] <query>"
+  exit 1
+fi
+
+if [[ "$1" == "suggest" || "$1" == "explain" || "$1" == "tldr" ]]; then
+  MODE="$1"
+  shift
+fi
+
+QUERY="$*"
+
+if [[ -z "$QUERY" ]]; then
+  echo "Error: no query provided"
+  exit 1
+fi
+
+# System prompts
+SYS_SUGGEST="You are a shell command assistant for Fedora Linux 42 with zsh. The user has these tools available: docker, git, systemctl (user and system), dnf, find, grep, awk, sed, jq, fzf, wl-copy, tmux, nvim. Output ONLY the raw shell command with no explanation, no markdown fences, no leading/trailing whitespace."
+
+SYS_EXPLAIN="Explain the following shell command in plain English. Be concise: 2-3 sentences maximum. No markdown."
+
+SYS_TLDR="Show practical usage examples for this command in tldr-pages style. Format each example as:
+- Short description of what it does
+  \`command with {{placeholder}} syntax\`
+
+Show 4-6 common use cases. No markdown headers. No extra prose."
+
+# Colors
+BOLD='\033[1m'
+CYAN='\033[0;36m'
+YELLOW='\033[0;33m'
+RESET='\033[0m'
+
+run_claude() {
+  local sys="$1"
+  local query="$2"
+  claude --no-session-persistence --model haiku --tools "" --print \
+    --system-prompt "$sys" \
+    "$query"
+}
+
+suggest_loop() {
+  local query="$1"
+  local prev_cmd=""
+
+  while true; do
+    echo ""
+    echo -e "${CYAN}Asking Claude...${RESET}"
+
+    local build_query="$query"
+    if [[ -n "$prev_cmd" ]]; then
+      build_query="Previous command: $prev_cmd\nOriginal request: $query\nRevision: $query"
+    fi
+
+    local result
+    result=$(run_claude "$SYS_SUGGEST" "$build_query")
+    prev_cmd="$result"
+
+    echo ""
+    echo -e "${BOLD}  ${CYAN}${result}${RESET}"
+    echo ""
+    echo "? What would you like to do?"
+    echo "  1. Run this command"
+    echo "  2. Copy to clipboard"
+    echo "  3. Revise query"
+    echo "  4. Exit"
+    echo ""
+    printf "  Choice [1-4] or type a follow-up: "
+    read -r choice
+
+    case "$choice" in
+      1)
+        echo ""
+        echo -e "${YELLOW}Running:${RESET} $result"
+        eval "$result"
+        break
+        ;;
+      2)
+        echo -n "$result" | wl-copy
+        echo "Copied to clipboard."
+        break
+        ;;
+      3)
+        printf "  Revise: "
+        read -r revision
+        query="$revision"
+        prev_cmd="$result"
+        ;;
+      4|"")
+        break
+        ;;
+      *)
+        # Treat any other input as a follow-up revision
+        query="Previous command: $result. $choice"
+        prev_cmd="$result"
+        ;;
+    esac
+  done
+}
+
+tldr_mode() {
+  local query="$1"
+  echo ""
+  echo -e "${CYAN}Asking Claude...${RESET}"
+  local result
+  result=$(run_claude "$SYS_TLDR" "$query")
+  echo ""
+  echo -e "${result}"
+  echo ""
+  echo "? What would you like to do?"
+  echo "  1. Copy examples"
+  echo "  2. Exit"
+  echo ""
+  printf "  Choice [1-2]: "
+  read -r choice
+  case "$choice" in
+    1)
+      echo -n "$result" | wl-copy
+      echo "Copied to clipboard."
+      ;;
+  esac
+}
+
+explain_mode() {
+  local query="$1"
+  echo ""
+  echo -e "${CYAN}Asking Claude...${RESET}"
+  local result
+  result=$(run_claude "$SYS_EXPLAIN" "$query")
+  echo ""
+  echo -e "${BOLD}${result}${RESET}"
+  echo ""
+  echo "? What would you like to do?"
+  echo "  1. Copy explanation"
+  echo "  2. Exit"
+  echo ""
+  printf "  Choice [1-2]: "
+  read -r choice
+  case "$choice" in
+    1)
+      echo -n "$result" | wl-copy
+      echo "Copied to clipboard."
+      ;;
+  esac
+}
+
+# Main
+case "$MODE" in
+  suggest) suggest_loop "$QUERY" ;;
+  explain) explain_mode "$QUERY" ;;
+  tldr)    tldr_mode "$QUERY" ;;
+esac

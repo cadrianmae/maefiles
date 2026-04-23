@@ -22,3 +22,7 @@ bin/.render-env-out
 # then add here as a submodule. See docs/decisions/003-claude-config-deferred.md
 # and docs/runbooks/publish-claude-config.md.
 .claude/
+
+# Third-party binaries bundled elsewhere — don't track
+bin/swipl-win
+bin/wokwi-cli

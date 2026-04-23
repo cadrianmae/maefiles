@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+
+# ------------------------------------------------------------------------------
+# monitor-zram
+#
+# Launches a tmux session with layout:
+#   | left | right |
+# where the right column is split into:
+#   | top |
+#   |bottom|
+#
+# Layout shorthand: |left|right(|top|bottom|)|
+#
+# Dependencies: tmux, journalctl, watch, free, systemctl
+# ------------------------------------------------------------------------------
+
+SESSION_NAME="monitor-zram"
+
+# Default units to exclude from journalctl (use empty string to show all)
+DEFAULT_EXCLUDE="discord|vscode_runner"
+
+# Parse arguments
+UNITS_EXCLUDE="$DEFAULT_EXCLUDE"
+
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -e|--exclude)
+            UNITS_EXCLUDE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            echo "Usage: $0 [OPTIONS]"
+            echo ""
+            echo "Options:"
+            echo "  -e, --exclude PATTERN    Regex pattern to exclude from journalctl"
+            echo "                           (default: $DEFAULT_EXCLUDE)"
+            echo "  -h, --help               Show this help message"
+            echo ""
+            echo "Examples:"
+            echo "  $0                                    # Use default exclusions"
+            echo "  $0 --exclude \"discord|vscode_runner\"   # Custom exclusions"
+            echo "  $0 --exclude \"\"                      # Show all journal entries"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Fallback to environment variable if not set via args
+# UNITS_EXCLUDE=${UNITS_EXCLUDE:-"^$"}
+
+# Create or replace session
+if tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
+    tmux kill-session -t "$SESSION_NAME"
+fi
+
+# Start detached session with a single window named monitor
+tmux new-session -d -s "$SESSION_NAME" -n monitor
+
+# Pane layout: 3 panes total
+# Pane 0: left column (full height) - journalctl
+# Pane 1: right-top - systemctl watch
+# Pane 2: right-bottom - free watch
+
+# Pane 0: initial pane (left side, full height)
+tmux send-keys -t "${SESSION_NAME}:0.0" "journalctl -f | grep -viE '$UNITS_EXCLUDE'" C-m
+
+# Split horizontally to create right column (pane 1 = right side)
+tmux split-window -h -t "${SESSION_NAME}:0.0"
+tmux send-keys -t "${SESSION_NAME}:0.1" "watch -n 0.5 systemctl status systemd-zram-setup@zram0.service dev-zram0.swap" C-m
+
+# Split right pane vertically to create right-bottom (pane 2)
+tmux split-window -v -t "${SESSION_NAME}:0.1"
+tmux send-keys -t "${SESSION_NAME}:0.2" "watch -n 1 free -h" C-m
+
+# Select left pane
+tmux select-pane -t "${SESSION_NAME}:0.0"
+
+# Attach the session
+tmux attach -t "$SESSION_NAME"

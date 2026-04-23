@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""
+Parse D2L (Brightspace) Table of Contents HTML file
+Extracts course structure including sections, subsections, and content items
+"""
+
+from html.parser import HTMLParser
+import sys
+import os
+
+class NestedD2LParser(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.sections = []
+        self.current_section = None
+        self.current_subsection = None
+
+        self.in_h2 = False
+        self.in_h3 = False
+        self.in_link = False
+        self.current_link = {}
+
+    def handle_starttag(self, tag, attrs):
+        attrs_dict = dict(attrs)
+
+        # Main section headings (h2) - only content sections (vui-heading-4)
+        # Skip UI sections (vui-offscreen, vui-heading-2)
+        if tag == 'h2':
+            h2_class = attrs_dict.get('class', '')
+            if 'd2l-heading' in h2_class and 'vui-heading-4' in h2_class:
+                self.in_h2 = True
+
+        # Subsection headings (h3)
+        elif tag == 'h3' and 'd2l-linkheading' in attrs_dict.get('class', ''):
+            self.in_h3 = True
+
+        # Content links
+        elif tag == 'a' and 'd2l-link' in attrs_dict.get('class', ''):
+            href = attrs_dict.get('href', '')
+            title = attrs_dict.get('title', '')
+            if '/content/' in href:
+                self.in_link = True
+                self.current_link = {
+                    'href': href,
+                    'title_attr': title,
+                    'text': ''
+                }
+
+    def handle_data(self, data):
+        data = data.strip()
+        if not data:
+            return
+
+        # Skip generic UI text
+        if data in ['Load More', 'Clear Selection', 'Expand', 'Collapse']:
+            return
+
+        # Main section (h2)
+        if self.in_h2:
+            self.current_section = {
+                'title': data,
+                'subsections': [],
+                'items': []
+            }
+            self.sections.append(self.current_section)
+            self.current_subsection = None  # Reset subsection
+
+        # Subsection (h3)
+        elif self.in_h3:
+            if self.current_section:
+                self.current_subsection = {
+                    'title': data,
+                    'items': []
+                }
+                self.current_section['subsections'].append(self.current_subsection)
+
+        # Content link text
+        elif self.in_link:
+            self.current_link['text'] = data
+
+        # Date metadata
+        elif self.current_link and data.startswith('Starts'):
+            self.current_link['date'] = data
+
+    def handle_endtag(self, tag):
+        if tag == 'h2':
+            self.in_h2 = False
+        elif tag == 'h3':
+            self.in_h3 = False
+        elif tag == 'a' and self.in_link:
+            self.in_link = False
+
+            # Add link to current subsection or section
+            if self.current_link.get('text'):
+                if self.current_subsection:
+                    self.current_subsection['items'].append(self.current_link.copy())
+                elif self.current_section:
+                    self.current_section['items'].append(self.current_link.copy())
+
+            self.current_link = {}
+
+
+def main():
+    # Get file path from argument or use default
+    if len(sys.argv) > 1:
+        html_file = sys.argv[1]
+    else:
+        html_file = 'toc.html'
+
+    # Check if file exists
+    if not os.path.exists(html_file):
+        print(f"Error: File '{html_file}' not found", file=sys.stderr)
+        print(f"Usage: {sys.argv[0]} [path/to/toc.html]", file=sys.stderr)
+        sys.exit(1)
+
+    # Parse
+    with open(html_file, 'r', encoding='utf-8') as f:
+        html = f.read()
+
+    parser = NestedD2LParser()
+    parser.feed(html)
+
+    # Output
+    print("D2L TABLE OF CONTENTS")
+    print("=" * 70)
+    print()
+    print("NOTE: D2L HTML exports may not include nested folder contents.")
+    print("      Subsections marked as '(contents not in HTML export)' likely")
+    print("      contain files that need to be downloaded separately from D2L.")
+    print("      Compare with your local directory to identify missing content.")
+    print("=" * 70)
+
+    for i, section in enumerate(parser.sections, 1):
+        print(f"\n{i}. {section['title'].upper()}")
+        print("=" * 70)
+
+        # Direct items in section
+        if section['items']:
+            for j, item in enumerate(section['items'], 1):
+                print(f"\n   {i}.{j} {item['text']}")
+                if '–' in item['title_attr']:
+                    item_type = item['title_attr'].split('–')[-1].strip()
+                    print(f"       Type: {item_type}")
+                if 'date' in item:
+                    print(f"       📅 {item['date']}")
+
+        # Subsections
+        if section['subsections']:
+            for k, subsection in enumerate(section['subsections'], 1):
+                print(f"\n   {i}.{k} 📁 {subsection['title']}")
+
+                if subsection['items']:
+                    for m, item in enumerate(subsection['items'], 1):
+                        print(f"      {i}.{k}.{m} {item['text']}")
+                        if '–' in item['title_attr']:
+                            item_type = item['title_attr'].split('–')[-1].strip()
+                            print(f"          Type: {item_type}")
+                        if 'date' in item:
+                            print(f"          📅 {item['date']}")
+                else:
+                    print(f"          (contents not in HTML export)")
+
+        # Empty section indicator
+        if not section['items'] and not section['subsections']:
+            print("   (no content in HTML export)")
+
+        print()
+
+    # Summary
+    total_items = sum(len(s['items']) for s in parser.sections)
+    total_subsection_items = sum(len(sub['items']) for s in parser.sections for sub in s['subsections'])
+    total_subsections = sum(len(s['subsections']) for s in parser.sections)
+
+    print("=" * 70)
+    print(f"SUMMARY:")
+    print(f"  Sections: {len(parser.sections)}")
+    print(f"  Subsections: {total_subsections}")
+    print(f"  Items (direct): {total_items}")
+    print(f"  Items (in subsections): {total_subsection_items}")
+    print(f"  Total items: {total_items + total_subsection_items}")
+    print("=" * 70)
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+# DSLR Camera Virtual Webcam Manager
+# Usage: dslrcam [-c|--connect] [-d|--disconnect] [-s|--status] [-h|--help]
+
+setup_camera() {
+    if [ -e "/dev/video10" ]; then
+        echo "Camera is already setup"
+    else
+        sudo modprobe v4l2loopback card_label="Virtual Camera" video_nr=0
+    fi
+}
+
+test_camera() {
+    LANG=C gphoto2 --summary
+}
+
+preview_camera() {
+    vlc v4l2:///dev/video0
+}
+
+start_camera() {
+    systemctl --user start dslr-webcam.service
+    echo "Camera service started! 📸✨"
+}
+
+stop_camera() {
+    systemctl --user stop dslr-webcam.service
+    echo "Camera service stopped! 🛑💜"
+}
+
+camera_status() {
+    systemctl --user status dslr-webcam.service --no-pager
+}
+
+show_help() {
+    echo "DSLR Camera Virtual Webcam Manager"
+    echo ""
+    echo "Usage: dslrcam [OPTION]"
+    echo ""
+    echo "Options:"
+    echo "  -c, --connect     Connect the camera as a virtual webcam"
+    echo "  -d, --disconnect  Disconnect the camera"
+    echo "  -s, --status      Show camera service status"
+    echo "  --setup          Setup v4l2loopback module"
+    echo "  --test           Test camera connection"
+    echo "  --preview        Preview camera output in VLC"
+    echo "  -h, --help        Show this help message"
+}
+
+case "$1" in
+    -c|--connect)
+        start_camera
+        ;;
+    -d|--disconnect)
+        stop_camera
+        ;;
+    -s|--status)
+        camera_status
+        ;;
+    --setup)
+        setup_camera
+        ;;
+    --test)
+        test_camera
+        ;;
+    --preview)
+        preview_camera
+        ;;
+    -h|--help|"")
+        show_help
+        ;;
+    *)
+        echo "Invalid option: $1"
+        echo "Use -h or --help for usage information."
+        exit 1
+        ;;
+esac

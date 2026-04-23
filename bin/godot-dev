@@ -1,0 +1,135 @@
+#!/usr/bin/env bash
+# Godot development helper with NVIDIA GPU support
+# Usage: godot-dev <command> [args]
+
+# Configuration
+GODOT_BIN="godot-4.6"
+NVIDIA_ENV="__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia"
+
+# Default to discrete GPU (NVIDIA)
+GPU_MODE="discrete"
+
+# Parse --gpu flag if present
+if [[ "$1" == "--gpu" ]]; then
+  GPU_MODE="$2"
+  shift 2
+fi
+
+# Run Godot with selected GPU
+run_godot() {
+  case "$GPU_MODE" in
+    i|integrated)
+      # Use integrated Intel GPU (no env vars)
+      "$GODOT_BIN" "$@"
+      ;;
+    d|discrete|*)
+      # Use discrete NVIDIA GPU
+      env $NVIDIA_ENV "$GODOT_BIN" "$@"
+      ;;
+  esac
+}
+
+cmd="$1"
+
+# Help doesn't require a project
+if [[ "$cmd" == "help" || -z "$cmd" ]]; then
+  echo "Usage: godot-dev [--gpu <mode>] <command> [args]"
+  echo ""
+  echo "Options:"
+  echo "  --gpu <mode>  - Select GPU (default: discrete)"
+  echo "                  i, integrated  - Use Intel integrated GPU"
+  echo "                  d, discrete    - Use NVIDIA discrete GPU"
+  echo ""
+  echo "Commands:"
+  echo "  launch          - Launch Godot project manager (no project required)"
+  echo "  create [dir]    - Create new project directory (use --open to launch editor)"
+  echo "  editor          - Open Godot editor for current project"
+  echo "  nvim            - Start Neovim with socket for godotdev.nvim"
+  echo "  run             - Run the current project"
+  echo "  help            - Show this help message"
+  echo ""
+  echo "Examples:"
+  echo "  godot-dev editor                        # Use NVIDIA GPU"
+  echo "  godot-dev --gpu integrated editor       # Use Intel GPU"
+  echo "  godot-dev create my-game                # Create project only"
+  echo "  godot-dev create my-game --open         # Create and open editor"
+  echo "  godot-dev --gpu d create my-game --open # Create with NVIDIA GPU and open"
+  echo ""
+  echo "Typical workflow:"
+  echo "  1. In pane 1: godot-dev nvim"
+  echo "  2. In pane 2: godot-dev editor"
+  echo "  3. Double-click scripts in Godot to edit in Neovim"
+  echo ""
+  echo "Using godotdev.nvim for LSP, DAP debugging, and formatting"
+  exit 0
+fi
+
+# launch command doesn't require a project
+if [[ "$cmd" == "launch" ]]; then
+  run_godot
+  exit 0
+fi
+
+# create command - optionally create directory and launch Godot
+if [[ "$cmd" == "create" ]]; then
+  shift # remove 'create' from args
+  open_editor=false
+  project_dir=""
+
+  # Parse arguments
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --open)
+        open_editor=true
+        shift
+        ;;
+      *)
+        project_dir="$1"
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$project_dir" ]]; then
+    mkdir -p "$project_dir"
+    echo "Created directory: $project_dir"
+    cd "$project_dir" || exit 1
+  fi
+
+  # Create project.godot file if it doesn't exist
+  if [[ ! -f "project.godot" ]]; then
+    touch project.godot
+    echo "Created project.godot"
+  fi
+
+  # Open in editor if --open flag was passed
+  if [[ "$open_editor" == true ]]; then
+    run_godot --path . --editor
+  fi
+  exit 0
+fi
+
+# Check for valid Godot project
+if [[ ! -f "project.godot" ]]; then
+  echo "Error: Not a Godot project directory (project.godot not found)"
+  echo "Run this command from a Godot project root directory"
+  exit 1
+fi
+
+case "$cmd" in
+  editor)
+    run_godot --path . --editor
+    ;;
+  nvim)
+    # Start Neovim with socket for godotdev.nvim integration
+    nvim --listen /tmp/godot.pipe
+    ;;
+  run)
+    run_godot --path .
+    ;;
+  *)
+    echo "Error: Unknown command '$cmd'"
+    echo "Run 'godot-dev help' for usage"
+    exit 1
+    ;;
+esac

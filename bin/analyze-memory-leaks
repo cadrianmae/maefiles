@@ -1,0 +1,33 @@
+#!/bin/bash
+# Analyze memory monitor logs to identify leaks
+
+if [[ -z "$1" ]]; then
+    LOG_FILE=$(ls -t ~/.cache/memory-monitor-*.log 2>/dev/null | head -1)
+    if [[ -z "$LOG_FILE" ]]; then
+        echo "No memory monitor logs found. Run 'monitor-memory --once' first."
+        exit 1
+    fi
+else
+    LOG_FILE="$1"
+fi
+
+echo "Analyzing: $LOG_FILE"
+echo ""
+
+# Extract timestamps and process memory usage
+echo "=== Memory Growth Over Time ==="
+echo ""
+
+# Get unique timestamps
+timestamps=$(grep "^---" "$LOG_FILE" | awk '{print $2, $3}')
+
+# For each watched process, show memory over time
+for proc in zen obsidian copilot discord spotify plasmashell; do
+    echo "📊 $proc:"
+    grep -A 15 "^---" "$LOG_FILE" | grep -i "$proc" | awk '{printf "  %s: %s MB (RSS: %s KB)\n", $11, $6/1024, $6}' | head -10
+    echo ""
+done
+
+# Show overall memory trend
+echo "=== System Memory Trend ==="
+grep -A 2 "^Mem:" "$LOG_FILE" | grep "^Mem:" | awk '{print $2, "total /", $3, "used /", $7, "available"}'

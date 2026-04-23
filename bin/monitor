@@ -1,0 +1,68 @@
+#!/bin/bash
+
+# ------------------------------------------------------------------------------
+# monitor.sh
+#
+# Launches a tmux session showing btop and nvtop, with the layout (horizontal
+# or vertical) determined by actual screen resolution (pixels), not terminal size.
+#
+# Supports:
+#   - X11 (via xrandr)
+#   - Wayland (via swaymsg)
+#
+# Dependencies:
+#   - tmux
+#   - btop
+#   - nvtop
+#   - xrandr (for X11) OR swaymsg (for Sway/Wayland)
+#
+# ------------------------------------------------------------------------------
+
+SESSION_NAME="monitor"
+WIDTH=""
+HEIGHT=""
+
+# Detect screen resolution in pixels
+if [ "$XDG_SESSION_TYPE" = "x11" ]; then
+    # X11 via xrandr
+    if command -v xrandr &> /dev/null; then
+        RESOLUTION=$(xrandr | grep '*' | awk '{print $1}' | head -n1)
+        WIDTH=${RESOLUTION%x*}
+        HEIGHT=${RESOLUTION#*x}
+    fi
+elif [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    # Wayland via swaymsg (only works with Sway or compatible compositors)
+    if command -v swaymsg &> /dev/null; then
+        RESOLUTION=$(swaymsg -t get_outputs | grep -Po '"current_mode":.*?"width":\K\d+|"height":\K\d+' | paste -sd ' ')
+        WIDTH=$(echo "$RESOLUTION" | cut -d ' ' -f1)
+        HEIGHT=$(echo "$RESOLUTION" | cut -d ' ' -f2)
+    fi
+fi
+
+# Fallback: use terminal size if resolution couldn't be determined
+if [ -z "$WIDTH" ] || [ -z "$HEIGHT" ]; then
+    WIDTH=$(tput cols)
+    HEIGHT=$(tput lines)
+fi
+
+# Choose split direction
+if [ "$WIDTH" -gt "$HEIGHT" ]; then
+    SPLIT_CMD="split-window -h"  # Landscape → side-by-side
+else
+    SPLIT_CMD="split-window -v"  # Portrait → stacked
+fi
+
+# Start tmux session
+tmux new-session -d -s "$SESSION_NAME"
+
+# First pane: btop
+tmux send-keys -t "$SESSION_NAME" 'btop' C-m
+
+# Split pane accordingly
+tmux $SPLIT_CMD -t "$SESSION_NAME"
+
+# Second pane: nvtop
+tmux send-keys -t "$SESSION_NAME" 'nvtop' C-m
+
+# Attach the session
+tmux attach -t "$SESSION_NAME"

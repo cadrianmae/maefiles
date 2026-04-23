@@ -1,0 +1,71 @@
+#!/bin/bash
+# Memory watchdog - monitors all known leaky apps
+
+LOG_FILE="$HOME/.cache/memory-watchdog.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"
+}
+
+# Check overall system memory
+TOTAL_MEM=$(free -m | awk '/^Mem:/ {print $2}')
+USED_MEM=$(free -m | awk '/^Mem:/ {print $3}')
+USED_PERCENT=$((USED_MEM * 100 / TOTAL_MEM))
+
+log "=== Memory Watchdog Check ==="
+log "System: ${USED_MEM}MB / ${TOTAL_MEM}MB (${USED_PERCENT}%)"
+
+# Check for orphaned nvim/copilot processes
+NVIM_COUNT=$(pgrep nvim | wc -l)
+COPILOT_TOTAL=0
+for pid in $(pgrep -f copilot.*language-server); do
+    mem=$(ps -o rss= -p $pid 2>/dev/null)
+    [[ -n "$mem" ]] && COPILOT_TOTAL=$((COPILOT_TOTAL + mem))
+done
+COPILOT_MB=$((COPILOT_TOTAL / 1024))
+
+if [[ $COPILOT_MB -gt 500 ]]; then
+    log "⚠️  Copilot: ${COPILOT_MB}MB (${NVIM_COUNT} nvim instances)"
+else
+    log "✅ Copilot: ${COPILOT_MB}MB"
+fi
+
+# Check Zen
+ZEN_TOTAL=0
+for pid in $(pgrep -f "zen/zen"); do
+    mem=$(ps -o rss= -p $pid 2>/dev/null)
+    [[ -n "$mem" ]] && ZEN_TOTAL=$((ZEN_TOTAL + mem))
+done
+ZEN_MB=$((ZEN_TOTAL / 1024))
+
+if [[ $ZEN_MB -gt 2500 ]]; then
+    log "⚠️  Zen: ${ZEN_MB}MB (HIGH - consider restart)"
+elif [[ $ZEN_MB -gt 1500 ]]; then
+    log "⚠️  Zen: ${ZEN_MB}MB (moderate)"
+else
+    log "✅ Zen: ${ZEN_MB}MB"
+fi
+
+# Check Obsidian
+OBSIDIAN_TOTAL=0
+for pid in $(pgrep -f "obsidian"); do
+    mem=$(ps -o rss= -p $pid 2>/dev/null)
+    [[ -n "$mem" ]] && OBSIDIAN_TOTAL=$((OBSIDIAN_TOTAL + mem))
+done
+OBSIDIAN_MB=$((OBSIDIAN_TOTAL / 1024))
+
+if [[ $OBSIDIAN_MB -gt 2000 ]]; then
+    log "⚠️  Obsidian: ${OBSIDIAN_MB}MB (HIGH - consider restart)"
+elif [[ $OBSIDIAN_MB -gt 1000 ]]; then
+    log "⚠️  Obsidian: ${OBSIDIAN_MB}MB (moderate)"
+else
+    log "✅ Obsidian: ${OBSIDIAN_MB}MB"
+fi
+
+# Send notification if system memory is critical
+if [[ $USED_PERCENT -gt 85 ]]; then
+    log "🚨 CRITICAL: System memory at ${USED_PERCENT}%!"
+    notify-send -u critical "Memory Warning" "System RAM at ${USED_PERCENT}% - Consider restarting Zen/Obsidian" -i dialog-warning 2>/dev/null
+fi
+
+log ""

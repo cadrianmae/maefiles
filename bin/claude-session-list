@@ -1,0 +1,96 @@
+#!/bin/bash
+# claude-session-list - List recent Claude Code sessions
+
+# Colors
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+NC='\033[0m'
+
+# Show help
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    cat << 'HELP'
+claude-session-list - List recent Claude Code sessions
+
+USAGE:
+    claude-session-list [N] [DIRECTORY]
+
+ARGUMENTS:
+    N          Number of recent sessions to list (default: 10)
+    DIRECTORY  Directory to list sessions for (default: current directory)
+
+EXAMPLES:
+    claude-session-list
+    claude-session-list 20
+    claude-session-list 10 ~/git/repo
+
+HELP
+    exit 0
+fi
+
+N="${1:-10}"
+DIR="${2:-$PWD}"
+
+# Encode path: /home/user/path -> -home-user-path
+ENCODED_PATH="${DIR#/}"  # Remove leading /
+ENCODED_PATH="-${ENCODED_PATH//\//-}"  # Replace / with - and add leading -
+PROJECT_DIR="/home/cadrianmae/.claude/projects/$ENCODED_PATH"
+
+if [[ ! -d "$PROJECT_DIR" ]]; then
+    echo -e "${RED}Error: No project directory found${NC}" >&2
+    exit 1
+fi
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}Recent Sessions for:${NC} $DIR"
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo ""
+
+COUNT=0
+cd "$PROJECT_DIR" || exit 1
+
+# Get current session
+CURRENT_ID=""
+if [[ -L /home/cadrianmae/.claude/debug/latest ]]; then
+    CURRENT_ID=$(basename "$(readlink /home/cadrianmae/.claude/debug/latest)" .txt)
+fi
+
+# Find and sort files
+for FILE in $(ls -t *.jsonl 2>/dev/null); do
+    # Skip agent files
+    [[ "$FILE" == agent-*.jsonl ]] && continue
+
+    ((COUNT++))
+    [[ $COUNT -gt $N ]] && break
+
+    SID="${FILE%.jsonl}"
+
+    # Get first user message
+    FIRST_MSG=$(head -50 "$FILE" | jq -r 'select(.type=="user" and (.message.content|type=="string")) | .message.content' 2>/dev/null | head -1 | cut -c1-100)
+
+    # Get timestamp
+    TS=$(head -10 "$FILE" | jq -r 'select(.type=="user") | .timestamp' 2>/dev/null | head -1)
+    DATE_STR=$(date -d "$TS" '+%Y-%m-%d %H:%M' 2>/dev/null || echo "")
+
+    # Count messages
+    MSG_COUNT=$(grep -c '"type":"user"\|"type":"assistant"' "$FILE" 2>/dev/null || echo "0")
+
+    # Mark current
+    MARKER=""
+    [[ "$SID" == "$CURRENT_ID" ]] && MARKER="${YELLOW}[CURRENT]${NC} "
+
+    echo -e "${BLUE}[$COUNT]${NC} $MARKER${GREEN}$DATE_STR${NC} (${CYAN}$MSG_COUNT${NC} msgs)"
+    echo -e "    ${YELLOW}ID:${NC} $SID"
+    [[ -n "$FIRST_MSG" ]] && echo -e "    ${YELLOW}Start:${NC} $FIRST_MSG"
+    echo ""
+done
+
+[[ $COUNT -eq 0 ]] && echo -e "${YELLOW}No sessions found${NC}\n"
+
+echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${GREEN}Total:${NC} $COUNT session(s)"
+echo ""
+echo -e "${YELLOW}Tip:${NC} Resume: ${CYAN}claude -r <session-id>${NC}"
+echo -e "${YELLOW}Tip:${NC} Summarize: ${CYAN}claude-session-summary <session-id>${NC}"

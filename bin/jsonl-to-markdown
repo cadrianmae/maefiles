@@ -1,0 +1,272 @@
+#!/usr/bin/env python3
+"""
+Convert a Claude Code session JSONL to a readable markdown transcript.
+
+Usage:
+    jsonl-to-markdown <session.jsonl> [-o out.md] [--include-thinking] [--include-tools]
+
+Schema handled (as of Claude Code 1.x):
+    - user.message.role=user          → rendered as ## You
+    - assistant.message.role=assistant → rendered as ## Claude
+    - everything else                  → skipped (metadata, hooks, snapshots)
+
+User message content may be a string OR a list of content blocks. Tool-result
+blocks are skipped (not user input). System-generated tags like <command-name>,
+<system-reminder>, <user-prompt-submit-hook>, <local-command-stdout> are stripped.
+
+Assistant message content is always a list of blocks:
+    - type=thinking  → skipped unless --include-thinking
+    - type=text      → rendered as-is
+    - type=tool_use  → rendered as inline annotation unless --include-tools
+    - type=tool_result (rare in assistant) → skipped
+
+Output:
+    - Title + metadata header (session id, date, counts)
+    - Table of contents (user prompts, truncated)
+    - Each turn as "## You" / "## Claude" with anchor links
+"""
+
+import argparse
+import json
+import re
+import sys
+from datetime import datetime
+from pathlib import Path
+
+
+SYSTEM_TAGS = [
+    "system-reminder",
+    "user-prompt-submit-hook",
+    "command-name",
+    "command-message",
+    "command-args",
+    "local-command-stdout",
+    "local-command-stderr",
+    "local-command-caveat",
+]
+
+
+def strip_system_tags(text: str) -> str:
+    """Remove <tag>...</tag> blocks for known system-generated tags."""
+    for tag in SYSTEM_TAGS:
+        text = re.sub(rf"<{tag}>.*?</{tag}>", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def slugify(s: str, max_len: int = 60) -> str:
+    s = re.sub(r"[^\w\s-]", "", s.lower())
+    s = re.sub(r"[\s-]+", "-", s).strip("-")
+    return s[:max_len]
+
+
+def extract_user_text(msg_content) -> str | None:
+    """Return the user-typed text, or None if this is a tool-result / empty."""
+    if isinstance(msg_content, str):
+        stripped = strip_system_tags(msg_content)
+        return stripped if stripped else None
+
+    if isinstance(msg_content, list):
+        parts = []
+        for block in msg_content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                parts.append(block.get("text", ""))
+            elif btype == "tool_result":
+                # skip — not user input
+                continue
+        text = "\n".join(p for p in parts if p)
+        stripped = strip_system_tags(text)
+        return stripped if stripped else None
+
+    return None
+
+
+def extract_assistant_blocks(
+    msg_content, include_thinking: bool, include_tools: bool
+) -> list[str]:
+    """Return a list of rendered markdown segments from an assistant message."""
+    out = []
+    if not isinstance(msg_content, list):
+        return out
+
+    for block in msg_content:
+        if not isinstance(block, dict):
+            continue
+        btype = block.get("type")
+        if btype == "text":
+            out.append(block.get("text", "").strip())
+        elif btype == "thinking" and include_thinking:
+            thinking = block.get("thinking", "").strip()
+            if thinking:
+                out.append(f"> **[thinking]** {thinking}")
+        elif btype == "tool_use" and include_tools:
+            name = block.get("name", "?")
+            inp = block.get("input", {})
+            desc = inp.get("description") or inp.get("command") or inp.get("file_path") or ""
+            desc_short = (str(desc)[:120] + "…") if len(str(desc)) > 120 else str(desc)
+            if desc_short:
+                out.append(f"> **[tool: {name}]** {desc_short}")
+            else:
+                out.append(f"> **[tool: {name}]**")
+    return [s for s in out if s]
+
+
+def fmt_time(ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%H:%M")
+    except Exception:
+        return ts[:16]
+
+
+def fmt_date(ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        return dt.strftime("%Y-%m-%d (%A)")
+    except Exception:
+        return ts[:10]
+
+
+def parse_jsonl(path: Path) -> list[dict]:
+    """Yield each JSON object from the JSONL file."""
+    records = []
+    with path.open() as f:
+        for i, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                records.append(json.loads(line))
+            except json.JSONDecodeError as e:
+                print(f"[WARN] line {i}: invalid JSON ({e})", file=sys.stderr)
+    return records
+
+
+def extract_turns(records: list[dict], include_thinking: bool, include_tools: bool):
+    """Walk records in order, emit a flat list of turns.
+
+    A turn is (role, timestamp, text, anchor) where role ∈ {'user', 'assistant'}.
+    Consecutive assistant records (multi-chunk responses) are merged.
+    """
+    turns = []
+    last_role = None
+    user_counter = 0
+
+    for rec in records:
+        rtype = rec.get("type")
+        if rtype not in ("user", "assistant"):
+            continue
+        if rec.get("isSidechain"):
+            continue
+
+        msg = rec.get("message") or {}
+        content = msg.get("content")
+        ts = rec.get("timestamp", "")
+
+        if rtype == "user":
+            text = extract_user_text(content)
+            if not text:
+                continue
+            user_counter += 1
+            anchor = f"turn-{user_counter:03d}"
+            turns.append(("user", ts, text, anchor))
+            last_role = "user"
+
+        elif rtype == "assistant":
+            segs = extract_assistant_blocks(content, include_thinking, include_tools)
+            if not segs:
+                continue
+            body = "\n\n".join(segs)
+            if last_role == "assistant" and turns:
+                # merge into previous assistant turn
+                prev = turns[-1]
+                turns[-1] = (prev[0], prev[1], prev[2] + "\n\n" + body, prev[3])
+            else:
+                turns.append(("assistant", ts, body, ""))
+                last_role = "assistant"
+
+    return turns
+
+
+def render_markdown(turns, session_id: str, source_path: Path) -> str:
+    if not turns:
+        return "# Transcript\n\n*(empty — no user/assistant messages found)*\n"
+
+    first_ts = next((t[1] for t in turns if t[1]), "")
+    last_ts = next((t[1] for t in reversed(turns) if t[1]), "")
+    user_turns = [t for t in turns if t[0] == "user"]
+    asst_turns = [t for t in turns if t[0] == "assistant"]
+
+    lines = []
+    lines.append(f"# Transcript — {fmt_date(first_ts)}")
+    lines.append("")
+    lines.append(f"- **Session:** `{session_id}`")
+    lines.append(f"- **Source:** `{source_path}`")
+    if first_ts and last_ts:
+        lines.append(f"- **Span:** {fmt_time(first_ts)} – {fmt_time(last_ts)}")
+    lines.append(f"- **Turns:** {len(user_turns)} user, {len(asst_turns)} assistant")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    lines.append("## Contents")
+    lines.append("")
+    for i, (_, ts, text, anchor) in enumerate(
+        [t for t in turns if t[0] == "user"], start=1
+    ):
+        preview = re.sub(r"\s+", " ", text).strip()[:80]
+        if len(text) > 80:
+            preview += "…"
+        lines.append(f"{i}. [{fmt_time(ts)} — {preview}](#{anchor})")
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+
+    for role, ts, text, anchor in turns:
+        if role == "user":
+            lines.append(f'<a id="{anchor}"></a>')
+            lines.append("")
+            lines.append(f"## You — {fmt_time(ts)}")
+            lines.append("")
+            lines.append(text)
+            lines.append("")
+        else:
+            lines.append(f"## Claude — {fmt_time(ts)}")
+            lines.append("")
+            lines.append(text)
+            lines.append("")
+            lines.append("---")
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    p.add_argument("jsonl", type=Path, help="Path to session .jsonl file")
+    p.add_argument("-o", "--output", type=Path, help="Output markdown path (default: stdout)")
+    p.add_argument("--include-thinking", action="store_true", help="Include assistant thinking blocks")
+    p.add_argument("--include-tools", action="store_true", help="Include tool-use annotations")
+    args = p.parse_args()
+
+    if not args.jsonl.exists():
+        print(f"[ERROR] file not found: {args.jsonl}", file=sys.stderr)
+        return 1
+
+    records = parse_jsonl(args.jsonl)
+    session_id = next((r.get("sessionId") for r in records if r.get("sessionId")), args.jsonl.stem)
+    turns = extract_turns(records, args.include_thinking, args.include_tools)
+    md = render_markdown(turns, session_id, args.jsonl)
+
+    if args.output:
+        args.output.write_text(md)
+        print(f"[OK] wrote {len(turns)} turns → {args.output}", file=sys.stderr)
+    else:
+        sys.stdout.write(md)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

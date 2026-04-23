@@ -1,0 +1,40 @@
+#!/bin/bash
+# Check Zen/Firefox memory usage and provide restart recommendations
+
+ZEN_PID=$(pgrep -f "zen/zen$" | head -1)
+ZEN_TOTAL=0
+
+if [[ -n "$ZEN_PID" ]]; then
+    echo "🦊 Zen Browser Memory Usage:"
+    echo ""
+
+    # Get all Zen processes
+    ZEN_PROCESSES=$(pgrep -f "zen/zen")
+
+    for pid in $ZEN_PROCESSES; do
+        mem=$(ps -o rss= -p $pid 2>/dev/null)
+        if [[ -n "$mem" ]]; then
+            ZEN_TOTAL=$((ZEN_TOTAL + mem))
+        fi
+    done
+
+    ZEN_MB=$((ZEN_TOTAL / 1024))
+    echo "  Total: ${ZEN_MB}MB across $(echo "$ZEN_PROCESSES" | wc -l) processes"
+
+    # Recommendation
+    if [[ $ZEN_MB -gt 2000 ]]; then
+        echo "  ⚠️  HIGH - Consider restarting Zen"
+    elif [[ $ZEN_MB -gt 1000 ]]; then
+        echo "  ⚠️  MODERATE - Check about:memory in Zen"
+    else
+        echo "  ✅ Normal"
+    fi
+
+    echo ""
+    echo "  💡 To investigate in Zen:"
+    echo "     - Type 'about:memory' in address bar"
+    echo "     - Click 'Measure and save...' to see detailed breakdown"
+    echo "     - Look for heavy tabs/extensions"
+else
+    echo "Zen browser not running"
+fi

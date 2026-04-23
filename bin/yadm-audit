@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# yadm-audit — verify manifest ↔ pass alignment
+#
+# Exits 0 if every manifest entry has a pass path; nonzero on drift.
+#
+# Used by:
+#   - pre-commit hook (before any commit)
+#   - daily systemd timer (indirectly via yadm-check-staleness)
+#   - manual invocation
+
+set -euo pipefail
+
+MANIFEST="$HOME/docs/secret/manifest.yaml"
+FAIL=0
+
+[[ -f "$MANIFEST" ]] || { echo "[ERROR] manifest missing: $MANIFEST" >&2; exit 1; }
+command -v yq >/dev/null || { echo "[ERROR] yq required" >&2; exit 1; }
+command -v pass >/dev/null || { echo "[ERROR] pass required" >&2; exit 1; }
+
+# 1. Every manifest entry has a pass entry
+while IFS=$'\t' read -r env pass_path bws; do
+  if ! pass show "$pass_path" >/dev/null 2>&1; then
+    echo "[FAIL] manifest ok, pass missing: $env → pass/$pass_path (bws:$bws)"
+    FAIL=1
+  fi
+done < <(yq -r '.secrets[] | [.env, .pass, .bws] | @tsv' "$MANIFEST")
+
+# 2. Every pass entry under known prefixes has a manifest entry (orphan detection)
+MANIFEST_PATHS=$(yq -r '.secrets[].pass' "$MANIFEST" | sort -u)
+# Consider: only audit paths directly referenced by manifest for now
+# (pass may contain entries unrelated to maefiles, which is fine)
+
+if [[ $FAIL -eq 0 ]]; then
+  echo "[OK] manifest ↔ pass aligned ($(wc -l <<<"$MANIFEST_PATHS") entries)"
+fi
+
+exit $FAIL

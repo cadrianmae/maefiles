@@ -1,0 +1,46 @@
+#!/bin/bash
+# Check Obsidian memory usage and provide plugin recommendations
+
+OBSIDIAN_TOTAL=0
+
+# Get all Obsidian processes
+OBSIDIAN_PROCESSES=$(pgrep -f "obsidian")
+
+if [[ -n "$OBSIDIAN_PROCESSES" ]]; then
+    echo "📝 Obsidian Memory Usage:"
+    echo ""
+
+    for pid in $OBSIDIAN_PROCESSES; do
+        mem=$(ps -o rss= -p $pid 2>/dev/null)
+        if [[ -n "$mem" ]]; then
+            OBSIDIAN_TOTAL=$((OBSIDIAN_TOTAL + mem))
+        fi
+    done
+
+    OBSIDIAN_MB=$((OBSIDIAN_TOTAL / 1024))
+    echo "  Total: ${OBSIDIAN_MB}MB across $(echo "$OBSIDIAN_PROCESSES" | wc -l) processes"
+
+    # Recommendation
+    if [[ $OBSIDIAN_MB -gt 1500 ]]; then
+        echo "  ⚠️  HIGH - Restart Obsidian recommended"
+    elif [[ $OBSIDIAN_MB -gt 800 ]]; then
+        echo "  ⚠️  MODERATE - Check community plugins"
+    else
+        echo "  ✅ Normal"
+    fi
+
+    # Check for known problematic plugins
+    if [[ -d "$HOME/Documents/Computer Science TU856/.obsidian/plugins" ]]; then
+        echo ""
+        echo "  💡 Community plugins installed:"
+        ls -1 "$HOME/Documents/Computer Science TU856/.obsidian/plugins" 2>/dev/null | head -10
+        echo ""
+        echo "  Common memory hogs:"
+        echo "     - Dataview (indexing large vaults)"
+        echo "     - Calendar plugins"
+        echo "     - Graph view (if left open)"
+        echo "     - PDF plugins with many PDFs"
+    fi
+else
+    echo "Obsidian not running"
+fi

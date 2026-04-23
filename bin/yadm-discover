@@ -1,0 +1,196 @@
+#!/usr/bin/env bash
+# yadm-discover — summarise config locations in $HOME that yadm isn't tracking.
+#
+# Philosophy: don't enumerate every file (5000+ under .config/). Group by
+# directory or pattern, report counts, let Mae decide what to add.
+#
+# Output sections:
+#   1. Dotfiles at $HOME root       — individual files, ~/ level
+#   2. .config/ subdirs             — one line per subdir, with untracked count
+#   3. .claude/ configs             — grouped by known file patterns
+#   4. systemd/user units           — service/timer files she authored
+#
+# Flags:
+#   -v, --verbose    Show up to N untracked files under each subdir (default 3)
+#   -a, --all        Show ALL untracked files per subdir (no limit)
+
+set -euo pipefail
+
+cd "$HOME"
+
+VERBOSE=0
+LIMIT=3
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -v|--verbose) VERBOSE=1 ;;
+    -a|--all)     LIMIT=999999 ;;
+    *) echo "usage: $(basename "$0") [-v|--verbose] [-a|--all]" >&2; exit 1 ;;
+  esac
+  shift
+done
+
+# Tracked files (relative paths) — sorted for comm
+tracked_tmp=$(mktemp); trap 'rm -f "$tracked_tmp"' EXIT
+yadm ls-files 2>/dev/null | sort -u > "$tracked_tmp"
+
+# ---------------------------------------------------------------------------
+# 1. Dotfiles at $HOME root
+# ---------------------------------------------------------------------------
+echo "═══ 1. Dotfiles at ~ ═══"
+# Known per-machine state that should NOT be tracked (secrets, tokens, caches)
+HOME_DENY_RE='^(\.claude|\.env|\.bash_history|\.bash_logout|\.python_history|\.node_repl_history|\.lesshst|\.viminfo|\.Xauthority|\.ICEauthority|\.sudo_as_admin_successful|\.motd_shown|\.wget-hsts|\.gtkrc-2\.0.*|\.gkrc|\.fehbg|\.npmrc|\.zsh_history|\.zcompdump.*|\.RData|\.Rhistory|\.Rprofile|\.psql_history|\.steampid|\.pdfbox\.cache|\.lmmsrc\.xml|\.qmidiarprc|\.nvidia-settings-rc|\.fonts\.conf)$'
+for f in ~/.* ; do
+  [[ -f "$f" ]] || continue
+  base="${f##*/}"
+  rel="$base"
+  [[ "$rel" =~ $HOME_DENY_RE ]] && continue
+  if grep -Fxq "$rel" "$tracked_tmp"; then
+    echo "  ✓ $rel"
+  else
+    echo "  ☐ $rel   ← not tracked"
+  fi
+done | column -s $'\n' -x 2>/dev/null || true
+
+# ---------------------------------------------------------------------------
+# 2. .config/ subdirs — summarise each, show untracked file count
+# ---------------------------------------------------------------------------
+echo
+echo "═══ 2. .config/ subdirs ═══"
+# App-managed subdirs to ignore (not user-edited config). Case-insensitive match.
+CONFIG_DENY_RE='^(akonadi|ardour[0-9]*|autostart|bitwarden\ cli|bravesoftware|cat_installer|chromium|claude|code|configstore|crossnote|dconf|discord|dmitriysalnikov|docker\ desktop|docker-desktop|docker-daemon|dockutil|enchant|ente|epiphany|evolution|falktx|figma-linux|fontforge|frescobaldi|fyne|gedit|gh|ghostty|gimp|github-copilot|gnome-.*|go|godot|google-.*|gtk-[234]\.0|gtklock|guitarix|harmonyseq|heroic|homebank|htop|hu\.irl\..*|ibus|inkscape|jetbrains|kate|kde|kdeconnect|kde\.org|kdedefaults|kdeglobals|kio|kscreen|kxmlgui5|libaccounts-.*|libreoffice|lsp-plugins|lyxrc|mattermost|menus|microsoft-.*|modemmanager|mpremote|mpv|musescore|neofetch|nix|obs-studio|obsidian|opera|pcsx2|plasma|plasma-.*|postman|ppsspp|protonmail|proton\ mail|pulse|qdirstat|qtproject|raspberry\ pi|rawtherapee|rclone|reaper|rhythmbox|rncbc\.org|rpcs3|rstudio|sentry|session|signal|slack|solaar|spotify|stardewvalley|strawberry|supercollider|systemd|thonny|thunderbird|todoist|undertale|unity3d|unknown\ organization|user-dirs\..*|vivaldi|vlc|vmpk\.sourceforge\.net|vscode-sqltools|wivrn|wyliodrinstudio|yabridgectl|yarn|yadm|mimeapps\.list|speech-dispatcher\.bak.*)$|\.conf\.d$'
+
+# Max file count before a subdir is considered "app state" not user config.
+# Overridden by ALWAYS_USER_CONFIG below.
+MAX_USER_FILES=30
+
+# These dirs ARE user-edited config despite being large (e.g. nvim with many plugins)
+ALWAYS_USER_CONFIG_RE='^(nvim|tmux|awesome|hypr|i3|sway|qtile|xmonad|easyeffects)$'
+
+SKIPPED_COUNT=0
+SKIPPED_BIG=()
+
+while IFS= read -r sub; do
+  sub_rel=".config/$sub"
+  # Case-insensitive match against denylist
+  sub_lower=$(echo "$sub" | tr '[:upper:]' '[:lower:]')
+  if [[ "$sub_lower" =~ $CONFIG_DENY_RE ]]; then
+    SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
+    continue
+  fi
+  # Count files under this subdir (skip if a bare file, not a dir)
+  [[ -d "$HOME/$sub_rel" ]] || continue
+
+  total=$(find "$HOME/$sub_rel" -type f 2>/dev/null | wc -l)
+  [[ "$total" -eq 0 ]] && continue
+
+  # Heuristic: if dir has > MAX_USER_FILES, it's almost certainly app state.
+  # Override: ALWAYS_USER_CONFIG dirs bypass the threshold.
+  if [[ "$total" -gt $MAX_USER_FILES && ! "$sub_lower" =~ $ALWAYS_USER_CONFIG_RE ]]; then
+    SKIPPED_BIG+=("$sub_rel ($total files)")
+    continue
+  fi
+
+  untracked_count=0
+  untracked_list=()
+  while IFS= read -r file; do
+    rel="${file#$HOME/}"
+    if ! grep -Fxq "$rel" "$tracked_tmp"; then
+      untracked_count=$((untracked_count + 1))
+      [[ ${#untracked_list[@]} -lt $LIMIT ]] && untracked_list+=("$rel")
+    fi
+  done < <(find "$HOME/$sub_rel" -type f 2>/dev/null)
+
+  if [[ $untracked_count -eq 0 ]]; then
+    printf "  ✓ %-30s (%d files, all tracked)\n" "$sub_rel" "$total"
+  elif [[ $untracked_count -eq $total ]]; then
+    printf "  ☐ %-30s (%d files, none tracked)\n" "$sub_rel" "$total"
+  else
+    printf "  ◐ %-30s (%d/%d untracked)\n" "$sub_rel" "$untracked_count" "$total"
+  fi
+
+  if [[ $VERBOSE -eq 1 && $untracked_count -gt 0 ]]; then
+    for u in "${untracked_list[@]}"; do
+      printf "      %s\n" "$u"
+    done
+    if [[ $untracked_count -gt $LIMIT ]]; then
+      printf "      ... and %d more\n" "$((untracked_count - LIMIT))"
+    fi
+  fi
+done < <(ls -1 ~/.config 2>/dev/null)
+
+if [[ $SKIPPED_COUNT -gt 0 ]] || [[ ${#SKIPPED_BIG[@]} -gt 0 ]]; then
+  echo
+  printf "  (skipped %d app-managed subdirs; " "$SKIPPED_COUNT"
+  if [[ ${#SKIPPED_BIG[@]} -gt 0 ]]; then
+    printf "%d > %d files: %s" "${#SKIPPED_BIG[@]}" "$MAX_USER_FILES" "${SKIPPED_BIG[*]}"
+  else
+    printf "none exceeded %d files" "$MAX_USER_FILES"
+  fi
+  printf ")\n"
+fi
+
+# ---------------------------------------------------------------------------
+# 3. .claude/ configs — only known-useful paths
+# ---------------------------------------------------------------------------
+echo
+echo "═══ 3. .claude/ configs ═══"
+CLAUDE_KEEP=(
+  .claude/CLAUDE.md
+  .claude/settings.json
+  .claude/memory.md
+)
+for f in "${CLAUDE_KEEP[@]}"; do
+  if [[ -e "$HOME/$f" ]]; then
+    if grep -Fxq "$f" "$tracked_tmp"; then
+      echo "  ✓ $f"
+    else
+      echo "  ☐ $f   ← not tracked"
+    fi
+  fi
+done
+
+# Groups — count untracked matching a glob, show one line
+claude_group() {
+  local label="$1" glob="$2"
+  local total untracked
+  total=$(ls -1 $glob 2>/dev/null | wc -l)
+  [[ $total -eq 0 ]] && return
+  untracked=0
+  for f in $glob; do
+    [[ -e "$f" ]] || continue
+    rel="${f#$HOME/}"
+    grep -Fxq "$rel" "$tracked_tmp" || untracked=$((untracked + 1))
+  done
+  if [[ $untracked -eq 0 ]]; then
+    printf "  ✓ %-30s (%d files, all tracked)\n" "$label" "$total"
+  elif [[ $untracked -eq $total ]]; then
+    printf "  ☐ %-30s (%d files, none tracked)\n" "$label" "$total"
+  else
+    printf "  ◐ %-30s (%d/%d untracked)\n" "$label" "$untracked" "$total"
+  fi
+}
+claude_group ".claude/hooks/*.sh"       "$HOME/.claude/hooks/*.sh"
+claude_group ".claude/statusline*.sh"   "$HOME/.claude/statusline*.sh"
+claude_group ".claude/rules/**"         "$HOME/.claude/rules/*"
+
+# ---------------------------------------------------------------------------
+# 4. systemd/user units
+# ---------------------------------------------------------------------------
+echo
+echo "═══ 4. systemd/user units ═══"
+shopt -s nullglob
+for f in ~/.config/systemd/user/*.service ~/.config/systemd/user/*.timer ~/.config/systemd/user/*.target; do
+  rel="${f#$HOME/}"
+  if grep -Fxq "$rel" "$tracked_tmp"; then
+    echo "  ✓ $rel"
+  else
+    echo "  ☐ $rel   ← not tracked"
+  fi
+done
+shopt -u nullglob
+
+echo
+echo "Legend: ✓ tracked   ☐ not tracked   ◐ partially tracked"
+echo "To add an untracked item:  yadm add ~/<path>"
+echo "Re-run with -v to see first few untracked files under each subdir."

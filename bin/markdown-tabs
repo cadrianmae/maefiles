@@ -1,0 +1,332 @@
+#!/usr/bin/env python3
+"""
+Build a single self-contained HTML page with tabbed markdown views.
+
+Renders markdown with markdown-it (CDN), mermaid diagrams, and highlight.js
+syntax highlighting. Each input becomes a tab.
+
+Usage:
+    markdown-tabs --title "My Plan" \\
+        -t "Overview=overview.md" \\
+        -t "Spec=spec.md" \\
+        -t "Transcript=transcript.md" \\
+        -o output.html
+
+Tabs are specified as LABEL=PATH pairs. The first tab is active by default.
+
+Features:
+    - Mermaid code blocks (```mermaid) render as diagrams
+    - Any other code blocks get highlight.js syntax highlighting
+    - Fenced code blocks support all languages hljs recognises
+    - Single HTML file, opens directly in browser (file://)
+    - Light + dark theme toggle (localStorage-persisted)
+"""
+
+import argparse
+import html
+import json
+import sys
+from pathlib import Path
+
+
+HTML_TEMPLATE = r"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title}</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github.min.css" id="hljs-light">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github-dark.min.css" id="hljs-dark" disabled>
+<script src="https://cdn.jsdelivr.net/npm/markdown-it@14.1.0/dist/markdown-it.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/dockerfile.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/nginx.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/lua.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/languages/ini.min.js"></script>
+<script>
+  // Minimal Graphviz DOT language (not bundled with highlight.js upstream)
+  if (typeof hljs !== 'undefined') {{
+    hljs.registerLanguage('dot', function(hljs) {{
+      return {{
+        name: 'Graphviz DOT',
+        case_insensitive: true,
+        keywords: {{
+          keyword: 'strict graph digraph subgraph node edge',
+          literal: 'true false'
+        }},
+        contains: [
+          hljs.COMMENT('//', '$'),
+          hljs.COMMENT('#', '$'),
+          hljs.C_BLOCK_COMMENT_MODE,
+          hljs.QUOTE_STRING_MODE,
+          {{ className: 'number', begin: /-?\d+(?:\.\d+)?/ }},
+          {{ className: 'operator', begin: /->|--|=/ }},
+          {{ className: 'attr', begin: /\b(?:shape|label|color|style|fillcolor|fontname|fontsize|rankdir|cluster|arrowhead|penwidth)\b/ }}
+        ]
+      }};
+    }});
+  }}
+</script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<style>
+  :root {{
+    --bg: #ffffff;
+    --fg: #1f2328;
+    --muted: #656d76;
+    --accent: #0969da;
+    --border: #d0d7de;
+    --panel: #f6f8fa;
+    --code-bg: #f6f8fa;
+    --tab-active-bg: #ffffff;
+    --tab-hover: #eaeef2;
+  }}
+  [data-theme="dark"] {{
+    --bg: #0d1117;
+    --fg: #e6edf3;
+    --muted: #848d97;
+    --accent: #58a6ff;
+    --border: #30363d;
+    --panel: #161b22;
+    --code-bg: #161b22;
+    --tab-active-bg: #0d1117;
+    --tab-hover: #21262d;
+  }}
+  * {{ box-sizing: border-box; }}
+  html, body {{ margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    font-size: 16px; line-height: 1.6; }}
+  header {{ position: sticky; top: 0; z-index: 10; background: var(--panel);
+    border-bottom: 1px solid var(--border); padding: 0.5rem 1.5rem;
+    display: flex; align-items: center; gap: 1rem; }}
+  header h1 {{ font-size: 1.1rem; margin: 0; flex: 0 0 auto; }}
+  nav {{ display: flex; gap: 0; flex: 1; }}
+  nav button {{ background: transparent; border: none; padding: 0.6rem 1.2rem;
+    font-size: 0.95rem; color: var(--muted); cursor: pointer; border-bottom: 2px solid transparent;
+    font-weight: 500; transition: all 0.15s; }}
+  nav button:hover {{ background: var(--tab-hover); color: var(--fg); }}
+  nav button.active {{ color: var(--accent); border-bottom-color: var(--accent); background: var(--tab-active-bg); }}
+  .theme-toggle {{ background: transparent; border: 1px solid var(--border); color: var(--fg);
+    padding: 0.3rem 0.7rem; border-radius: 4px; cursor: pointer; font-size: 0.9rem; }}
+  .theme-toggle:hover {{ background: var(--tab-hover); }}
+  main {{ max-width: 960px; margin: 0 auto; padding: 2rem 1.5rem 5rem; }}
+  .tab-panel {{ display: none; }}
+  .tab-panel.active {{ display: block; }}
+  .tab-panel h1, .tab-panel h2, .tab-panel h3 {{ line-height: 1.25; margin-top: 1.5em; margin-bottom: 0.5em; }}
+  .tab-panel h1 {{ font-size: 2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }}
+  .tab-panel h2 {{ font-size: 1.5rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }}
+  .tab-panel h3 {{ font-size: 1.25rem; }}
+  .tab-panel code {{ background: var(--code-bg); padding: 0.2em 0.4em; border-radius: 4px;
+    font-family: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace; font-size: 0.88em; }}
+  .tab-panel pre {{ background: var(--code-bg); padding: 1rem; border-radius: 6px; overflow-x: auto;
+    border: 1px solid var(--border); }}
+  .tab-panel pre code {{ background: transparent; padding: 0; font-size: 0.88em; }}
+  .tab-panel table {{ border-collapse: collapse; margin: 1rem 0; overflow-x: auto; display: block; max-width: 100%; }}
+  .tab-panel th, .tab-panel td {{ border: 1px solid var(--border); padding: 0.5rem 0.8rem; text-align: left; }}
+  .tab-panel th {{ background: var(--panel); font-weight: 600; }}
+  .tab-panel blockquote {{ border-left: 3px solid var(--border); color: var(--muted); padding-left: 1rem; margin-left: 0; }}
+  .tab-panel hr {{ border: 0; border-top: 1px solid var(--border); margin: 2rem 0; }}
+  .tab-panel a {{ color: var(--accent); text-decoration: none; }}
+  .tab-panel a:hover {{ text-decoration: underline; }}
+  .mermaid {{ background: var(--panel); padding: 1rem; border-radius: 6px; text-align: center;
+    border: 1px solid var(--border); margin: 1rem 0; }}
+  [data-theme="dark"] .mermaid svg {{ background: transparent; }}
+  .anchor-link {{ opacity: 0; margin-left: 0.3em; text-decoration: none; }}
+  h1:hover .anchor-link, h2:hover .anchor-link, h3:hover .anchor-link {{ opacity: 0.5; }}
+  .loading {{ text-align: center; padding: 4rem; color: var(--muted); }}
+</style>
+</head>
+<body>
+<header>
+  <h1>{title}</h1>
+  <nav id="tabs">
+{tab_buttons}
+  </nav>
+  <button class="theme-toggle" id="themeToggle">Toggle theme</button>
+</header>
+<main>
+{tab_panels}
+</main>
+
+{markdown_scripts}
+
+<script>
+(function() {{
+  // Theme toggle
+  const savedTheme = localStorage.getItem('theme') || 'light';
+  document.documentElement.setAttribute('data-theme', savedTheme);
+  document.getElementById('hljs-light').disabled = savedTheme === 'dark';
+  document.getElementById('hljs-dark').disabled = savedTheme === 'light';
+  document.getElementById('themeToggle').onclick = function() {{
+    const cur = document.documentElement.getAttribute('data-theme') || 'light';
+    const next = cur === 'light' ? 'dark' : 'light';
+    document.documentElement.setAttribute('data-theme', next);
+    document.getElementById('hljs-light').disabled = next === 'dark';
+    document.getElementById('hljs-dark').disabled = next === 'light';
+    localStorage.setItem('theme', next);
+    // Re-render mermaid in new theme
+    renderMermaid(next);
+  }};
+
+  // Tab switching
+  document.querySelectorAll('#tabs button').forEach(btn => {{
+    btn.onclick = function() {{
+      const id = btn.dataset.tab;
+      document.querySelectorAll('#tabs button').forEach(b => b.classList.toggle('active', b === btn));
+      document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'panel-' + id));
+      location.hash = id;
+      // Mermaid diagrams inside hidden panels render at 0-width; re-render on reveal
+      renderMermaidInPanel(document.getElementById('panel-' + id));
+    }};
+  }});
+
+  // Open deep-linked tab if hash present
+  if (location.hash) {{
+    const id = location.hash.slice(1);
+    const btn = document.querySelector('#tabs button[data-tab="' + id + '"]');
+    if (btn) btn.click();
+  }}
+
+  // Render markdown
+  const md = window.markdownit({{
+    html: true,
+    linkify: true,
+    typographer: true,
+    breaks: false,
+  }});
+  document.querySelectorAll('script[type="text/markdown"]').forEach(script => {{
+    const tabId = script.dataset.tab;
+    const panel = document.getElementById('panel-' + tabId);
+    if (!panel) return;
+    const raw = script.textContent;
+    let rendered = md.render(raw);
+    // Swap mermaid code blocks for mermaid divs
+    rendered = rendered.replace(
+      /<pre><code class="language-mermaid">([\s\S]*?)<\/code><\/pre>/g,
+      (_m, body) => '<div class="mermaid">' + decodeHtmlEntities(body) + '</div>'
+    );
+    panel.innerHTML = rendered;
+  }});
+
+  function decodeHtmlEntities(s) {{
+    const t = document.createElement('textarea');
+    t.innerHTML = s;
+    return t.value;
+  }}
+
+  // Highlight non-mermaid code (skip unknown languages silently)
+  if (typeof hljs !== 'undefined') {{
+    document.querySelectorAll('.tab-panel pre code').forEach(el => {{
+      const m = el.className.match(/language-(\S+)/);
+      const lang = m && m[1];
+      if (!lang || lang === 'mermaid') return;
+      if (!hljs.getLanguage(lang)) return;  // unknown → leave as plain
+      try {{ hljs.highlightElement(el); }} catch (e) {{ console.warn('hljs', e); }}
+    }});
+  }} else {{
+    console.warn('highlight.js not loaded');
+  }}
+
+  // Mermaid: stash source, render only what's visible, re-render on tab reveal + theme change
+  function stashMermaidSources() {{
+    document.querySelectorAll('.mermaid').forEach(el => {{
+      if (!el.dataset.source) el.dataset.source = el.textContent;
+    }});
+  }}
+  function initMermaid(theme) {{
+    if (typeof mermaid === 'undefined') return false;
+    mermaid.initialize({{
+      startOnLoad: false,
+      theme: theme === 'dark' ? 'dark' : 'default',
+      securityLevel: 'loose',
+    }});
+    return true;
+  }}
+  function renderMermaidInPanel(panel) {{
+    if (!panel || typeof mermaid === 'undefined') return;
+    const diagrams = panel.querySelectorAll('.mermaid');
+    if (!diagrams.length) return;
+    diagrams.forEach(el => {{
+      el.innerHTML = el.dataset.source || el.textContent;
+      el.removeAttribute('data-processed');
+    }});
+    try {{ mermaid.run({{ nodes: Array.from(diagrams) }}); }} catch (e) {{ console.warn('mermaid', e); }}
+  }}
+  function renderMermaidAll(theme) {{
+    if (!initMermaid(theme)) {{ console.warn('mermaid not loaded'); return; }}
+    document.querySelectorAll('.tab-panel.active').forEach(renderMermaidInPanel);
+  }}
+  stashMermaidSources();
+  renderMermaidAll(savedTheme);
+
+  // Update renderMermaid reference used by theme toggle
+  window.renderMermaid = function(theme) {{
+    if (!initMermaid(theme)) return;
+    // Reset all diagrams to source; render all (visible + later on tab switch)
+    document.querySelectorAll('.mermaid').forEach(el => {{
+      el.innerHTML = el.dataset.source || el.textContent;
+      el.removeAttribute('data-processed');
+    }});
+    document.querySelectorAll('.tab-panel.active').forEach(renderMermaidInPanel);
+  }};
+}})();
+</script>
+</body>
+</html>
+"""
+
+
+def escape_for_script_tag(s: str) -> str:
+    """Make content safe to embed in <script type="text/markdown">."""
+    return s.replace("</script>", "<\\/script>")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__.split("\n")[1])
+    p.add_argument("--title", required=True, help="Page <title> and header")
+    p.add_argument(
+        "-t", "--tab", action="append", required=True, metavar="LABEL=PATH",
+        help="Tab label and markdown file path (repeatable; first is active)",
+    )
+    p.add_argument("-o", "--output", type=Path, required=True, help="Output HTML path")
+    args = p.parse_args()
+
+    tabs = []
+    for spec in args.tab:
+        if "=" not in spec:
+            print(f"[ERROR] --tab needs LABEL=PATH, got: {spec}", file=sys.stderr)
+            return 1
+        label, path = spec.split("=", 1)
+        md_path = Path(path).expanduser()
+        if not md_path.exists():
+            print(f"[ERROR] file not found: {md_path}", file=sys.stderr)
+            return 1
+        tab_id = "".join(c.lower() if c.isalnum() else "-" for c in label).strip("-")
+        tabs.append((tab_id, label, md_path.read_text()))
+
+    tab_buttons = "\n".join(
+        f'    <button data-tab="{html.escape(tid)}"{" class=\"active\"" if i == 0 else ""}>{html.escape(label)}</button>'
+        for i, (tid, label, _) in enumerate(tabs)
+    )
+    tab_panels = "\n".join(
+        f'  <section class="tab-panel{ " active" if i == 0 else ""}" id="panel-{html.escape(tid)}"><div class="loading">Loading…</div></section>'
+        for i, (tid, _, _) in enumerate(tabs)
+    )
+    markdown_scripts = "\n".join(
+        f'<script type="text/markdown" data-tab="{html.escape(tid)}">\n{escape_for_script_tag(content)}\n</script>'
+        for tid, _, content in tabs
+    )
+
+    html_out = HTML_TEMPLATE.format(
+        title=html.escape(args.title),
+        tab_buttons=tab_buttons,
+        tab_panels=tab_panels,
+        markdown_scripts=markdown_scripts,
+    )
+
+    args.output.write_text(html_out)
+    print(f"[OK] wrote {len(tabs)} tabs → {args.output}", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
