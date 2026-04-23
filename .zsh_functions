@@ -1,0 +1,278 @@
+compress-video() {
+  local input="$1"
+  local quality="${2:-23}"
+
+  if [[ -z "$input" ]]; then
+    echo "Usage: compress-video <input-file> [quality]"
+    echo "Quality: lower = better (18-28 recommended)"
+    return 1
+  fi
+
+  echo "Compressing video: $input with quality $quality"
+
+  # Try NVENC first, fallback to CPU
+  ffmpeg -i "$input" -c:v h264_nvenc -crf "$quality" "${input%.*}_compressed.mp4"
+  if [[ $? -eq 0 ]]; then
+    echo "🎮 NVENC-compressed: ${input%.*}_compressed.mp4 (CRF: $quality)"
+  else
+    echo "⚠️  NVENC failed, using CPU..."
+    ffmpeg -i "$input" -c:v libx264 -crf "$quality" "${input%.*}_compressed.mp4"
+    echo "💻 CPU-compressed: ${input%.*}_compressed.mp4 (CRF: $quality)"
+  fi
+}
+
+# LibreOffice PDF Conversion Aliases and Functions
+
+# Simple alias for PDF conversion
+alias libre2pdf='libreoffice --headless --convert-to pdf'
+
+# Function for batch PDF conversion
+libre2pdf-batch() {
+    if [ $# -eq 0 ]; then
+        echo "Usage: pdf-convert-batch <file1> [file2] [file3] ..."
+        echo "Converts multiple files to PDF using LibreOffice headless mode"
+        return 1
+    fi
+
+    for file in "$@"; do
+        if [ -f "$file" ]; then
+            echo "Converting: $file"
+            libreoffice --headless --convert-to pdf "$file"
+        else
+            echo "File not found: $file"
+        fi
+    done
+}
+
+# Function to convert all supported files in current directory
+libre2pdf-all() {
+    echo "Converting all supported documents in current directory to PDF..."
+    find . -maxdepth 1 \( -name "*.docx" -o -name "*.doc" -o -name "*.odt" -o -name "*.rtf" -o -name "*.xlsx" -o -name "*.xls" -o -name "*.ods" -o -name "*.pptx" -o -name "*.ppt" -o -name "*.odp" \) -exec libreoffice --headless --convert-to pdf {} \;
+    echo "Conversion complete!"
+}
+
+# Cheatsheet wrapper with grep search capability
+# Usage: cs <sheet>           - Show full cheatsheet
+#        cs <sheet> <term>    - Search within cheatsheet (case-insensitive, with context)
+cs() {
+  if [[ $# -eq 2 ]]; then
+    # Two args: search within the specified cheatsheet
+    cheat "$1" | grep -i -C 3 "$2"
+  else
+    # One arg or other: use default cheat behavior
+    cheat "$@"
+  fi
+}
+
+# Direnv prompt functions (called from .zshrc PROMPT/RPROMPT)
+function direnv_prompt_info() {
+  if [[ -n "$(direnv status 2>/dev/null | grep 'Found RC path')" ]]; then
+    # Always show direnv indicator
+    local indicator="%F{green}[direnv]%f"
+    # Append custom DIRENV_PROMPT if it exists
+    if [[ -n "$DIRENV_PROMPT" ]]; then
+      echo "${indicator} ${DIRENV_PROMPT}"
+    else
+      echo "$indicator"
+    fi
+  fi
+}
+
+function direnv_rprompt_info() {
+  if [[ -n "$(direnv status 2>/dev/null | grep 'Found RC path')" ]]; then
+    if [[ -n "$DIRENV_RPROMPT" ]]; then
+      echo "$DIRENV_RPROMPT"
+    fi
+  fi
+}
+
+# Odino wrapper - finds .odino directory in parent directories (like git)
+# Usage: odino <command> [args...]
+odino() {
+  # Find the actual odino binary location
+  local odino_bin=$(whence -p odino)
+
+  if [[ -z "$odino_bin" ]]; then
+    echo "Error: odino binary not found in PATH" >&2
+    return 1
+  fi
+
+  # Find .odino directory by traversing up the directory tree
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -d "$dir/.odino" ]]; then
+      # Found .odino directory - run odino from there
+      (cd "$dir" && "$odino_bin" "$@")
+      return $?
+    fi
+    dir="$(dirname "$dir")"
+  done
+
+  # No .odino directory found - run odino anyway (might be init command)
+  "$odino_bin" "$@"
+}
+
+# Tmux pane title setter
+# Usage: pane-title "My Pane Name"
+pane-title() {
+  if [[ -z "$1" ]]; then
+    echo "Usage: pane-title <title>"
+    return 1
+  fi
+  printf '\033]2;%s\033\\' "$1"
+}
+
+# Tmux pane logging - captures all pane I/O to a file
+# Usage: pane-log [name]     - Start logging (default name: window-pane)
+#        pane-log-off        - Stop logging for current pane
+pane-log() {
+  if [[ -z "$TMUX" ]]; then
+    echo "Error: must be inside a tmux session"
+    return 1
+  fi
+
+  local name="${1:-$(tmux display-message -p '#W-#P')}"
+  local logfile="/tmp/${name}.log"
+  tmux pipe-pane -o "sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' >> ${logfile}"
+  echo "Logging pane to ${logfile}"
+}
+
+pane-log-off() {
+  if [[ -z "$TMUX" ]]; then
+    echo "Error: must be inside a tmux session"
+    return 1
+  fi
+  tmux pipe-pane
+  echo "Pane logging stopped."
+}
+
+# Dev layout: nvim (75%x75%) | claude (25%x100%)
+#             shell (25%x25%) |
+# Usage: dev-split
+dev-split() {
+  if [[ -z "$TMUX" ]]; then
+    echo "Error: dev-split must be run inside a tmux session"
+    return 1
+  fi
+
+  tmux split-window -h -p 25        # Split right 25% for claude
+  tmux select-pane -L                # Select left pane
+  tmux split-window -v -p 25        # Split bottom 25% for shell
+  tmux select-pane -U                # Select top pane (nvim)
+  tmux send-keys "nvim" C-m         # Start nvim
+  tmux select-pane -R                # Select right pane (claude)
+  tmux send-keys "claude" C-m       # Start claude
+  tmux select-pane -L                # Go back to left column
+  tmux select-pane -U                # Focus nvim (top-left)
+}
+
+# ---------------------------------------------------------------------------
+# env-key - load/clear API keys from pass into environment on demand
+# Convention: pass path "api/foo" -> env var FOO_API_KEY
+# Usage:
+#   env-key load api/anthropic    # single entry -> ANTHROPIC_API_KEY
+#   env-key load api              # all entries under api/ (dir)
+#   env-key load 'api/*'          # same (glob)
+#   env-key load '*'              # everything in the store, recursively
+#   env-key list                  # show all pass entries + loaded status
+#   env-key clear api/anthropic   # unset one
+#   env-key clear                 # unset all loaded via env-key
+# ---------------------------------------------------------------------------
+typeset -gA _ENV_KEY_MAP
+
+_env_key_varname() {
+  # NOTE: 'entry' not 'path' — zsh ties $path to $PATH array; shadowing it in
+  # a function breaks external commands (pass, gpg) that depend on $PATH.
+  local entry="$1"
+  local name="${entry##*/}"
+  echo "${name:u}_API_KEY"
+}
+
+# Expand "api", "api/*", "*", or exact entry into a list of pass paths
+_env_key_expand() {
+  local arg="$1"
+  local store="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+  local -a files=()
+  local f rel
+
+  if [[ "$arg" == "*" ]]; then
+    files=( "$store"/**/*.gpg(N) )
+  elif [[ "$arg" == */\* ]]; then
+    files=( "$store"/${arg%/\*}/*.gpg(N) )
+  elif [[ -d "$store/$arg" ]]; then
+    files=( "$store/$arg"/*.gpg(N) )
+  else
+    # exact entry - just echo it if present
+    [[ -f "$store/$arg.gpg" ]] && { echo "$arg"; return; }
+    return 1
+  fi
+
+  for f in "${files[@]}"; do
+    rel="${f#$store/}"
+    echo "${rel%.gpg}"
+  done
+}
+
+_env_key_load_one() {
+  local entry="$1" var
+  var=$(_env_key_varname "$entry")
+  if ! pass show "$entry" >/dev/null 2>&1; then
+    echo "env-key: pass entry '$entry' not found" >&2
+    return 1
+  fi
+  export "$var"="$(pass show "$entry")"
+  _ENV_KEY_MAP[$entry]="$var"
+  echo "env-key: loaded \$$var  ($entry)"
+}
+
+env-key() {
+  local cmd="$1" entry="$2" var p
+  case "$cmd" in
+    load)
+      [[ -z "$entry" ]] && { echo "usage: env-key load <pass-path|dir|glob|*>" >&2; return 1; }
+      local -a expanded
+      expanded=( ${(f)"$(_env_key_expand "$entry")"} )
+      if (( ${#expanded} == 0 )); then
+        echo "env-key: no entries matched '$entry'" >&2
+        return 1
+      fi
+      for p in "${expanded[@]}"; do
+        _env_key_load_one "$p"
+      done
+      ;;
+    clear)
+      if [[ -n "$entry" ]]; then
+        var="${_ENV_KEY_MAP[$entry]:-$(_env_key_varname "$entry")}"
+        unset "$var"
+        unset "_ENV_KEY_MAP[$entry]"
+        echo "env-key: cleared \$$var"
+      else
+        for p v in "${(@kv)_ENV_KEY_MAP}"; do
+          unset "$v"
+          echo "env-key: cleared \$$v ($p)"
+        done
+        _ENV_KEY_MAP=()
+      fi
+      ;;
+    list)
+      local store="${PASSWORD_STORE_DIR:-$HOME/.password-store}"
+      local entry rel v marker
+      echo "env-key: pass entries (* = loaded in this shell)"
+      for entry in "$store"/**/*.gpg(N); do
+        rel="${entry#$store/}"
+        rel="${rel%.gpg}"
+        v=$(_env_key_varname "$rel")
+        if [[ -n "${_ENV_KEY_MAP[$rel]}" ]]; then
+          marker="*"
+        else
+          marker=" "
+        fi
+        printf "  [%s] %-24s -> \$%s\n" "$marker" "$rel" "$v"
+      done
+      ;;
+    *)
+      echo "usage: env-key {load|clear|list} [pass-path]" >&2
+      return 1
+      ;;
+  esac
+}

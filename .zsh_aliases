@@ -1,0 +1,37 @@
+# Vim
+alias vi="vim"
+alias nv="nvim"
+alias nvsl='nvim -c '\''lua require("resession").load("Last Session")'\'''
+
+# Cheat sheet
+# cs is now a function in .zsh_functions (with grep search support)
+# alias cs="cheat"
+alias csp="cheat -p personal"
+
+# systemctl --user restart plasma-plasmashell.service
+alias restart-plasma="systemctl --user restart plasma-plasmashell.service"
+alias clip=wl-copy
+
+alias open="xdg-open"
+
+# Clear kitty graphics (ghosted images) in tmux
+alias imgclear="printf '\ePtmux;\e\e_Ga=d\e\e\\\\\e\\\\'"
+alias clear-images='kitty +kitten icat --clear'
+
+# Docker rootless
+alias docker-start="systemctl --user start docker"
+alias docker-stop="systemctl --user stop docker"
+alias docker-restart="systemctl --user restart docker"
+alias docker-status="systemctl --user status docker"
+alias docker-log="journalctl --user -u docker.service -f"
+alias docker-enable="systemctl --user enable docker"
+
+# Kitty theme switching
+alias kitty-light='kitty +kitten themes --reload-in=all "Catppuccin-Latte"'
+alias kitty-dark='kitty +kitten themes --reload-in=all "Catppuccin-Macchiato"'
+
+# Snappy UI screenshot timer (on Pi)
+alias sss-start='ssh snappy.home systemctl --user start snappy-ss.timer'
+alias sss-stop='ssh snappy.home systemctl --user stop snappy-ss.timer'
+alias sss-status='ssh snappy.home systemctl --user list-timers snappy-ss.timer --no-pager'
+alias sss-now='ssh snappy.home systemctl --user start snappy-ss.service'
