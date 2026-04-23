@@ -1,0 +1,222 @@
+# ==============================================================================
+# CLAUDIA STATUSLINE CONFIGURATION
+# ==============================================================================
+# Custom layout with placeholders for bash wrapper script
+# Placeholders replaced by statusline-claudia.sh:
+#   __ARROW__        → ➜ (green arrow symbol)
+#   __TIMESTAMP__    → Mon 13 Jan 14:23 (current time)
+#   __SESSION_ICON__ → 📅/✓/⚙/◆ + session name (from .claude/sessions/)
+#   __THINKING_MODE__→ 🧠 (brain emoji when thinking enabled)
+#   __OUTPUT_STYLE__ → default/thinking/verbose (output style from JSON)
+#   __DURATION__     → 12h 35m (session duration from JSON)
+
+# ==============================================================================
+# LAYOUT CONFIGURATION
+# ==============================================================================
+[layout]
+# Custom format using template variables (multi-line with """ syntax)
+# Available variables: {directory}, {git}, {model}, {duration}, {context_pct},
+#                      {cost}, {context_tokens}, {sep}, and more
+# See: https://github.com/hagan/claudia-statusline/blob/main/docs/CONFIGURATION.md
+format = """
+__ARROW__ {directory} {sep} __SESSION_ICON__ {git} __TIMESTAMP__
+  __THINKING_MODE__{model} {sep} __OUTPUT_STYLE__ {sep} {context}
+  __DURATION__ {sep} {cost}
+"""
+
+# Separator character used by {sep} in format string
+# Options: "•", "|", "·", "-", or any string
+separator = "•"
+
+# ==============================================================================
+# COMPONENT-SPECIFIC FORMATTING
+# ==============================================================================
+
+[layout.components.directory]
+format = "short"      # Options: "short" (abbreviated), "full" (complete path), "basename" (directory name only)
+max_length = 60       # Maximum characters before truncation (0 = unlimited)
+# color = "#00AAFF"   # Optional: Named color or hex code (e.g., "cyan", "#00AAFF")
+
+[layout.components.git]
+format = "full"       # Options: "full" (branch + status), "branch" (name only), "status" (changes only)
+show_when = "always"  # Options: "always", "dirty" (only when changes exist), "never"
+# color = "green"     # Optional: Named color or hex code
+
+[layout.components.context]
+format = "full"       # Options: "full" (bar + %), "bar" (progress bar only), "percent" (% only), "tokens" (count only)
+show_tokens = false   # Show token counts like "179k/1000k" (true/false)
+color = "white"     # Optional: Named color or hex code
+
+[layout.components.model]
+format = "full"       # Options: "full" (complete name), "abbreviation" (short), "name" (without version), "version" (only version)
+# color = "cyan"      # Optional: Named color or hex code
+
+[layout.components.cost]
+format = "full"       # Options: "full" (cost + rate), "cost_only" ($X.XX), "rate_only" ($/hour), "with_daily" (includes daily total)
+# color = "green"     # Optional: Named color or hex code (can be threshold-based)
+
+# ==============================================================================
+# DISPLAY SETTINGS
+# ==============================================================================
+[display]
+progress_bar_width = 10              # Width of context usage progress bar in characters (default: 10)
+
+# Context usage color thresholds (percentage of context window)
+context_warning_threshold = 70.0     # Yellow/orange above this % (default: 70)
+context_critical_threshold = 90.0    # Red above this % (default: 90)
+context_caution_threshold = 50.0     # Caution color above this % (default: 50)
+
+# Color theme
+# Options: "catppuccin", "dark", "light", or custom theme name
+theme = "catppuccin"
+
+# Component visibility toggles (all default to true except show_context_tokens)
+show_directory = true        # Show current directory path
+show_git = true              # Show git branch and status
+show_context = true          # Show context usage percentage
+show_model = true            # Show Claude model name
+show_duration = true         # Show session duration
+show_lines_changed = true # Show lines added/removed (disabled - not in bash version)
+show_cost = true             # Show accumulated cost
+show_context_tokens = true   # Show token counts in context display (e.g., "179k/1000k")
+
+# ==============================================================================
+# CONTEXT WINDOW SETTINGS
+# ==============================================================================
+[context]
+# Default context window size in tokens (fallback for unknown models)
+# Auto-detection works for: Sonnet 4.5 (1M), Opus 3.5+ (200k), Sonnet 3.5+ (200k)
+# This is used when model-specific detection fails
+window_size = 200000  # Default: 200,000 tokens
+
+# Adaptive learning - learns actual context window sizes from usage patterns
+# Detects compaction events and token ceiling observations
+adaptive_learning = true # Options: true (experimental), false (default)
+
+# Minimum confidence threshold for using learned values (0.0-1.0)
+# Only applies when adaptive_learning = true
+# Confidence increases with more observations (0.7 = 70% confidence required)
+learning_confidence_threshold = 0.7  # Default: 0.7
+
+# Internal buffer settings
+buffer_size = 40000               # Token buffer size (default: 40000)
+auto_compact_threshold = 75.0     # Auto-compact above this % (default: 75)
+percentage_mode = "full"          # Options: "full", "compact" (default: "full")
+
+# ==============================================================================
+# COST TRACKING SETTINGS
+# ==============================================================================
+[cost]
+# Cost thresholds for color coding
+low_threshold = 5.0       # Green below this amount (default: $5.00)
+medium_threshold = 20.0   # Yellow between low and medium, red above (default: $20.00)
+
+# ==============================================================================
+# DATABASE SETTINGS
+# ==============================================================================
+[database]
+busy_timeout_ms = 10000  # SQLite busy timeout in milliseconds (default: 10000)
+path = "stats.db"        # Database filename (relative to data directory)
+
+# JSON backup alongside SQLite
+json_backup = false      # Options: true (maintain JSON backup), false (SQLite-only mode, default)
+
+# Data retention settings (for `statusline db-maintain` command)
+retention_days_sessions = 90   # Keep session data for N days (default: 90, 0 = forever)
+retention_days_daily = 365     # Keep daily aggregates for N days (default: 365)
+retention_days_monthly = 0     # Keep monthly aggregates for N days (default: 0 = forever)
+
+# ==============================================================================
+# RETRY SETTINGS (for reliability with concurrent access)
+# ==============================================================================
+
+[retry.file_ops]
+# File operation retry settings (tuned for concurrent access)
+max_attempts = 5           # Maximum retry attempts (default: 5)
+initial_delay_ms = 50      # Initial delay before first retry in ms (default: 50)
+max_delay_ms = 2000        # Maximum delay between retries in ms (default: 2000)
+backoff_factor = 1.5       # Exponential backoff multiplier (default: 1.5)
+
+[retry.db_ops]
+# Database operation retry settings
+max_attempts = 5           # Maximum retry attempts (default: 5)
+initial_delay_ms = 50      # Initial delay in ms (default: 50)
+max_delay_ms = 2000        # Maximum delay in ms (default: 2000)
+backoff_factor = 1.5       # Exponential backoff multiplier (default: 1.5)
+
+[retry.git_ops]
+# Git operation retry settings
+max_attempts = 3           # Maximum retry attempts (default: 3)
+initial_delay_ms = 100     # Initial delay in ms (default: 100)
+max_delay_ms = 3000        # Maximum delay in ms (default: 3000)
+backoff_factor = 2.0       # Exponential backoff multiplier (default: 2.0)
+
+[retry.network_ops]
+# Network operation retry settings
+max_attempts = 2           # Maximum retry attempts (default: 2)
+initial_delay_ms = 200     # Initial delay in ms (default: 200)
+max_delay_ms = 1000        # Maximum delay in ms (default: 1000)
+backoff_factor = 2.0       # Exponential backoff multiplier (default: 2.0)
+
+# ==============================================================================
+# TRANSCRIPT SETTINGS
+# ==============================================================================
+[transcript]
+# Number of transcript lines to keep in memory (circular buffer)
+# For large files, only the last N lines are read (tail-reading optimization)
+buffer_lines = 50  # Default: 50 lines
+
+# ==============================================================================
+# GIT SETTINGS
+# ==============================================================================
+[git]
+# Git operation timeout in milliseconds
+# Operations taking longer than this will be cancelled
+timeout_ms = 200  # Default: 200ms
+
+# ==============================================================================
+# BURN RATE CALCULATION SETTINGS
+# ==============================================================================
+[burn_rate]
+# Burn rate calculation mode
+# Options:
+#   "wall_clock"  - Uses total elapsed time from session start to last update
+#                   Simple and backward compatible. Includes idle time (nights, weekends).
+#                   Example: $8.99 over 22 days = $0.02/hour
+#
+#   "active_time" - Tracks only active conversation time (excludes idle periods)
+#                   More accurate representation of actual usage cost.
+#                   Example: $8.99 over 2 hours active = $4.50/hour
+#
+#   "auto_reset"  - Automatically starts new sessions after inactivity
+#                   Each session gets independent cost/duration tracking.
+#                   Best for realistic burn rate tracking.
+mode = "wall_clock"  # Default: "wall_clock"
+
+# Inactivity threshold in minutes (used by "active_time" and "auto_reset" modes)
+# Sessions idle longer than this are considered inactive
+inactivity_threshold_minutes = 60  # Default: 60 minutes (1 hour)
+
+# ==============================================================================
+# TOKEN RATE SETTINGS (OPTIONAL)
+# ==============================================================================
+# Uncomment to enable token rate metrics display
+# [token_rate]
+enabled = true # Options: true (show token/s metrics), false (default)
+display_mode = "summary"     # Options: "summary" (simple rate), "detailed" (breakdown), "cache_only" (cache focus)
+cache_metrics = true         # Show cache efficiency metrics (hit ratio, ROI)
+inherit_duration_mode = true # Use same duration mode as burn_rate (recommended for consistency)
+
+# ==============================================================================
+# CLOUD SYNC SETTINGS (OPTIONAL - requires --features turso-sync build)
+# ==============================================================================
+# Uncomment to enable cloud synchronization across machines
+# [sync]
+# enabled = false
+# provider = "turso"
+# sync_interval_seconds = 60
+# soft_quota_fraction = 0.75  # Warn when usage exceeds 75% of quota
+#
+# [sync.turso]
+# database_url = "libsql://claude-stats.turso.io"
+# auth_token = "${TURSO_AUTH_TOKEN}"  # Or paste token directly

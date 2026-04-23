@@ -1,0 +1,17 @@
+name: dev
+path: "~"
+windows:
+  - name: main
+    flex_direction: row
+    panes:
+      - flex: 3
+        command: nvim
+      - flex: 2
+        flex_direction: column
+        panes:
+          - flex: 1
+            command: ""
+          - flex: 1
+            command: ""
+          - flex: 1
+            command: ""
