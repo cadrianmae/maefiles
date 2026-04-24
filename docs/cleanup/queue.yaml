@@ -1,0 +1,30 @@
+# Disk cleanup review queue.
+#
+# Each entry is a file/directory queued for later review. See
+# ~/bin/cleanup-review for the query tool and docs/cleanup/README.md
+# for the schema.
+#
+# status transitions: pending → actioned | dismissed
+# review_after is a hint, not a deadline — the tool just filters.
+
+entries:
+  - path: ~/Documents/Archive/OneDrive_2023-10-13.zip
+    size: 6.8 GiB
+    category: installer-archive
+    contents: >
+      IBM Rational Software Architect Designer (RSAD) v9.5 installers
+      (CORE 1, CORE 2, SETUP — 3 nested zips totalling 7.1 GB) plus
+      install guide PDFs. "For Students/" prefix suggests it came from
+      a TU Dublin course OneDrive in Oct 2023.
+    recommended_action: extract-pdfs-then-delete
+    reason: >
+      Year 4 CS — past the courses that needed RSAD. Niche IBM
+      enterprise tool; v9.5 already superseded. Keep the 2.4 MB of
+      PDFs as a reference artefact, drop the 6.8 GB of installers.
+    review_after: 2026-10-01   # ~6 months — revisit after FYP + job search
+    status: pending
+    added: 2026-04-24
+    notes: >
+      Verified contents via `7z l` (unzip chokes on Zip64 archives
+      with no central directory at start). If keeping PDFs:
+      `7z e OneDrive_2023-10-13.zip -aoa "*.pdf"`

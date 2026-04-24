@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+# pii-scan: skip
+"""cleanup-review — query the disk cleanup review queue.
+
+Reads ~/docs/cleanup/queue.yaml and filters entries by status + review date.
+
+Usage:
+    cleanup-review                  # pending entries due today or earlier
+    cleanup-review --all            # every entry
+    cleanup-review --overdue        # pending with review_after < today
+    cleanup-review --due N          # pending with review_after <= today+N days
+    cleanup-review --actioned       # only actioned
+    cleanup-review --dismissed      # only dismissed
+    cleanup-review --yaml           # emit filtered entries as YAML
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+from datetime import date, timedelta
+from pathlib import Path
+
+import yaml
+
+QUEUE = Path.home() / "docs" / "cleanup" / "queue.yaml"
+
+
+def load_entries():
+    if not QUEUE.exists():
+        print(f"no queue at {QUEUE}", file=sys.stderr)
+        sys.exit(1)
+    data = yaml.safe_load(QUEUE.read_text()) or {}
+    return data.get("entries", []) or []
+
+
+def fmt_entry(e):
+    lines = [
+        f"• {e.get('path', '?')}",
+        f"    size:    {e.get('size', '?')}   status: {e.get('status', '?')}",
+        f"    review:  {e.get('review_after', '?')}   added: {e.get('added', '?')}",
+        f"    action:  {e.get('recommended_action', '?')}",
+    ]
+    reason = (e.get("reason") or "").strip()
+    if reason:
+        lines.append(f"    reason:  {reason}")
+    return "\n".join(lines)
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--all", action="store_true", help="show every entry")
+    g.add_argument("--overdue", action="store_true", help="pending with review_after in the past")
+    g.add_argument("--due", type=int, metavar="N", help="pending with review_after within N days")
+    g.add_argument("--actioned", action="store_true")
+    g.add_argument("--dismissed", action="store_true")
+    ap.add_argument("--yaml", action="store_true", help="emit filtered entries as YAML")
+    args = ap.parse_args()
+
+    entries = load_entries()
+    today = date.today()
+
+    def review_date(e):
+        d = e.get("review_after")
+        if isinstance(d, date):
+            return d
+        if isinstance(d, str):
+            try:
+                return date.fromisoformat(d)
+            except ValueError:
+                return None
+        return None
+
+    if args.all:
+        filtered = entries
+    elif args.actioned:
+        filtered = [e for e in entries if e.get("status") == "actioned"]
+    elif args.dismissed:
+        filtered = [e for e in entries if e.get("status") == "dismissed"]
+    elif args.overdue:
+        filtered = [
+            e for e in entries
+            if e.get("status") == "pending"
+            and (rd := review_date(e)) is not None
+            and rd < today
+        ]
+    else:
+        horizon = today + timedelta(days=args.due) if args.due is not None else today
+        filtered = [
+            e for e in entries
+            if e.get("status") == "pending"
+            and (rd := review_date(e)) is not None
+            and rd <= horizon
+        ]
+
+    if args.yaml:
+        yaml.safe_dump({"entries": filtered}, sys.stdout, sort_keys=False, default_flow_style=False)
+        return
+
+    if not filtered:
+        print("(no entries match)")
+        return
+
+    print(f"{len(filtered)} entr{'y' if len(filtered) == 1 else 'ies'}:\n")
+    for e in filtered:
+        print(fmt_entry(e))
+        print()
+
+
+if __name__ == "__main__":
+    main()
