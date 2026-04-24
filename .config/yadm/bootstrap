@@ -47,6 +47,18 @@ require pass  || exit 1
 require bw    || exit 1
 require bws   || exit 1
 
+# --- gc guardrails (ADR 006) ------------------------------------------------
+# yadm work-tree is $HOME; a stray `stash -u` or accidental bulk-add can
+# balloon the bare repo to tens of GB. Enforce aggressive auto-gc on every
+# fresh machine so a future accident self-corrects on the next op.
+YADM_REPO="$HOME/.local/share/yadm/repo.git"
+if [[ -d "$YADM_REPO" ]]; then
+  git --git-dir="$YADM_REPO" config gc.auto 256
+  git --git-dir="$YADM_REPO" config gc.autoPackLimit 50
+  git --git-dir="$YADM_REPO" config gc.reflogExpire 30.days
+  git --git-dir="$YADM_REPO" config gc.reflogExpireUnreachable 7.days
+fi
+
 # --- 1. Machine class -------------------------------------------------------
 step "1/7  machine class"
 CLASS=$(yadm config local.class 2>/dev/null || true)
