@@ -13,10 +13,16 @@ _build_wt  := env_var('HOME') + '/.cache/maefiles-build'
 # Serve docs locally with live reload (http://127.0.0.1:7700).
 # Port 7700 chosen to sit near Sol (7777) in the personal-infra range,
 # clear of common dev defaults (3000/4200/5000/5173/8000/8080/8888).
-# Note: serve mode falls back to build-date for "Last update" since the
+# Note: mkdocs serve falls back to build-date for "Last update" since the
 # plugin can't see yadm's repo from $HOME. Accurate dates only on `docs-build`.
 docs-serve:
     mkdocs serve --dev-addr 127.0.0.1:7700
+
+# Serve the static built site (.site/) with live-reload via live-server.
+# Use this when you want to preview the production build with real
+# git-revision dates rendered. Run `just docs-build` first.
+docs-preview:
+    npx --yes live-server --host=127.0.0.1 --port=7700 --no-browser ~/.site
 
 # Build the static site into .site/ (strict — fails on warnings).
 # Spawns a throwaway git worktree so the revision-date plugin can read
