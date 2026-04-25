@@ -23,5 +23,5 @@ Personal dotfiles, secrets, ADRs, and runbooks for `cadrianmae`. Managed by [yad
 ## Local preview
 
 ```bash
-mkdocs serve  # http://127.0.0.1:8000
+just docs-serve  # http://127.0.0.1:7700
 ```

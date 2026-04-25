@@ -7,9 +7,11 @@ set shell := ["bash", "-eu", "-c"]
 default:
     @just --list --unsorted
 
-# Serve docs locally with live reload (http://127.0.0.1:8000).
+# Serve docs locally with live reload (http://127.0.0.1:7700).
+# Port 7700 chosen to sit near Sol (7777) in the personal-infra range,
+# clear of common dev defaults (3000/4200/5000/5173/8000/8080/8888).
 docs-serve:
-    mkdocs serve
+    mkdocs serve --dev-addr 127.0.0.1:7700
 
 # Build the static site into .site/ (strict — fails on warnings).
 docs-build:
