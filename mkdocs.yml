@@ -83,13 +83,12 @@ exclude_docs: |
 nav:
   - Home: index.md
   - Architecture: architecture.md
-  - Decisions:
-      - 001 — yadm over chezmoi: decisions/001-yadm-over-chezmoi.md
-      - 002 — BWS over bw for secrets: decisions/002-bws-over-bw-for-secrets.md
-      - 003 — claude-config deferred: decisions/003-claude-config-deferred.md
-      - 004 — per-machine SSH keys: decisions/004-per-machine-ssh-keys.md
-      - 005 — MkDocs + Material: decisions/005-mkdocs-material-for-rendering.md
-      - 006 — yadm stash -u footgun: decisions/006-yadm-stash-u-footgun.md
+  - Guides:
+      - Shell environment: guides/shell.md
+      - Desktop — KDE Plasma: guides/desktop-kde.md
+      - Desktop — Niri: guides/desktop-niri.md
+      - Pomodoro timer: guides/pomodoro.md
+      - Memory management: guides/memory-management.md
   - Runbooks:
       - New machine: runbooks/new-machine.md
       - Loading keys: runbooks/loading-keys.md
@@ -97,3 +96,19 @@ nav:
       - Recovery: runbooks/recovery.md
       - GPG key recovery: runbooks/gpg-key-recovery.md
       - Publish claude-config: runbooks/publish-claude-config.md
+      - Upgrade Fedora: runbooks/upgrade-fedora.md
+      - Troubleshoot NVIDIA: runbooks/troubleshoot-nvidia.md
+      - Troubleshoot KDE applets: runbooks/troubleshoot-kde-applets.md
+  - Reference:
+      - CLI tools: reference/cli-tools.md
+      - Git aliases: reference/git-aliases.md
+  - Decisions:
+      - 001 — yadm over chezmoi: decisions/001-yadm-over-chezmoi.md
+      - 002 — BWS over bw for secrets: decisions/002-bws-over-bw-for-secrets.md
+      - 003 — claude-config deferred: decisions/003-claude-config-deferred.md
+      - 004 — per-machine SSH keys: decisions/004-per-machine-ssh-keys.md
+      - 005 — MkDocs + Material: decisions/005-mkdocs-material-for-rendering.md
+      - 006 — yadm stash -u footgun: decisions/006-yadm-stash-u-footgun.md
+  - Specs:
+      - Dotfiles design (2026-04-20): specs/2026-04-20-dotfiles-yadm-design.md
+      - Dotfiles visual summary: specs/dotfiles-visual-summary.md
