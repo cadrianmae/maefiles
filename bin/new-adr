@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# new-adr — scaffold a new Architecture Decision Record.
+#
+# Usage: new-adr "kebab-or-prose title here"
+#
+# Picks the next NNN, writes ~/docs/decisions/NNN-kebab-title.md from a
+# minimal template, opens it in $EDITOR.
+
+set -euo pipefail
+
+ADR_DIR="$HOME/docs/decisions"
+[[ -d "$ADR_DIR" ]] || { echo "no $ADR_DIR" >&2; exit 1; }
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: new-adr \"title\"" >&2
+  exit 1
+fi
+
+TITLE="$*"
+SLUG=$(printf '%s' "$TITLE" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+
+NEXT=$(printf '%03d' "$((10#$(ls "$ADR_DIR" | grep -oE '^[0-9]{3}' | sort -n | tail -1) + 1))")
+FILE="$ADR_DIR/$NEXT-$SLUG.md"
+DATE=$(date +%Y-%m-%d)
+
+cat > "$FILE" <<EOF
+# ADR $NEXT — $TITLE
+
+- **Status:** proposed
+- **Date:** $DATE
+
+## Context
+
+<!-- What forces are at play? What problem does this solve? -->
+
+## Decision
+
+<!-- What are we choosing, in one paragraph? -->
+
+## Alternatives considered
+
+<!-- What did we reject and why? -->
+
+## Consequences
+
+### Advantages
+
+-
+
+### Disadvantages
+
+-
+
+## Related
+
+-
+EOF
+
+echo "$FILE"
+"${EDITOR:-vim}" "$FILE"

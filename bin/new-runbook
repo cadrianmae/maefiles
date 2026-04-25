@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# new-runbook — scaffold a new runbook.
+#
+# Usage: new-runbook "verb noun describing the procedure"
+
+set -euo pipefail
+
+RB_DIR="$HOME/docs/runbooks"
+[[ -d "$RB_DIR" ]] || { echo "no $RB_DIR" >&2; exit 1; }
+
+if [[ $# -lt 1 ]]; then
+  echo "usage: new-runbook \"verb-noun\"" >&2
+  exit 1
+fi
+
+TITLE="$*"
+SLUG=$(printf '%s' "$TITLE" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+
+FILE="$RB_DIR/$SLUG.md"
+[[ -e "$FILE" ]] && { echo "exists: $FILE" >&2; exit 1; }
+
+cat > "$FILE" <<EOF
+# $TITLE
+
+<!-- One-line summary of what this runbook gets you. -->
+
+## Prerequisites
+
+- [ ]
+
+## Procedure
+
+1.
+
+## Verification
+
+\`\`\`bash
+\`\`\`
+
+## Recovery / rollback
+
+<!-- What if a step fails partway through? -->
+
+## Related
+
+-
+EOF
+
+echo "$FILE"
+"${EDITOR:-vim}" "$FILE"

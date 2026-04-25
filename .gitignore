@@ -26,3 +26,6 @@ bin/.render-env-out
 # Third-party binaries bundled elsewhere — don't track
 bin/swipl-win
 bin/wokwi-cli
+
+# MkDocs build output
+.site/

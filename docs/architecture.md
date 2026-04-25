@@ -1,6 +1,6 @@
 # Architecture
 
-See the [full design spec](./../docs/superpowers/specs/2026-04-20-dotfiles-yadm-design.md) for the complete rationale, mermaid diagrams, and decision history. This document is a condensed in-repo reference.
+The full design spec lives outside this site at `~/dotfiles-plan/docs/superpowers/specs/2026-04-20-dotfiles-yadm-design.md` (working-copy artefact from the brainstorming phase). This document is a condensed in-repo reference.
 
 ## Three-layer secret flow
 

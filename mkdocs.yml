@@ -1,0 +1,99 @@
+site_name: maefiles
+site_description: Personal dotfiles, ADRs, and runbooks for cadrianmae
+site_author: cadrianmae
+docs_dir: docs
+site_dir: .site
+use_directory_urls: true
+
+theme:
+  name: material
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.indexes
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+
+repo_url: https://github.com/cadrianmae/maefiles
+repo_name: cadrianmae/maefiles
+edit_uri: edit/main/docs/
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      toc_depth: 3
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+plugins:
+  - search
+
+exclude_docs: |
+  secret/
+  cleanup/
+  /README.md
+
+nav:
+  - Home: index.md
+  - Architecture: architecture.md
+  - Decisions:
+      - 001 — yadm over chezmoi: decisions/001-yadm-over-chezmoi.md
+      - 002 — BWS over bw for secrets: decisions/002-bws-over-bw-for-secrets.md
+      - 003 — claude-config deferred: decisions/003-claude-config-deferred.md
+      - 004 — per-machine SSH keys: decisions/004-per-machine-ssh-keys.md
+      - 005 — MkDocs + Material: decisions/005-mkdocs-material-for-rendering.md
+      - 006 — yadm stash -u footgun: decisions/006-yadm-stash-u-footgun.md
+  - Runbooks:
+      - New machine: runbooks/new-machine.md
+      - Loading keys: runbooks/loading-keys.md
+      - Rotate secret: runbooks/rotate-secret.md
+      - Recovery: runbooks/recovery.md
+      - GPG key recovery: runbooks/gpg-key-recovery.md
+      - Publish claude-config: runbooks/publish-claude-config.md
