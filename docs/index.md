@@ -6,10 +6,14 @@ Personal dotfiles, secrets, ADRs, runbooks, and system documentation for `cadria
 
 - **[Architecture](architecture.md)** — how the pieces fit together
 - **Guides** — system & tooling how-tos:
-    - [Shell environment](guides/shell.md) — zsh, tmux, neovim, version managers
+    - [Shell environment](guides/shell.md) — zsh, tmux, version managers
+    - [Neovim](guides/neovim.md) — AstroNvim v4, LSP, language quirks
     - [Desktop — KDE Plasma](guides/desktop-kde.md) — Karousel scrolling tiler, Catppuccin
     - [Desktop — Niri](guides/desktop-niri.md) — scrolling Wayland compositor
+    - [Audio stack](guides/audio.md) — PipeWire, WirePlumber, EasyEffects, Piper TTS, CAVA
     - [Pomodoro timer](guides/pomodoro.md) — CLI timer with audio + voice + Obsidian logging
+    - [Git configuration](guides/git-config.md) — gitconfig, commit template, soft-warn hook
+    - [systemd user units](guides/systemd-user-units.md) — services + timers
     - [Memory management](guides/memory-management.md) — leak watchdogs and per-app fixes
 - **Runbooks** — concrete procedures:
     - [New machine](runbooks/new-machine.md) · [Loading keys](runbooks/loading-keys.md) · [Rotate secret](runbooks/rotate-secret.md)
@@ -18,6 +22,7 @@ Personal dotfiles, secrets, ADRs, runbooks, and system documentation for `cadria
 - **Reference**:
     - [CLI tools](reference/cli-tools.md) — env vars, file locations, custom commands
     - [Git aliases](reference/git-aliases.md) — full oh-my-zsh git plugin reference
+    - [Config inventory](reference/config-inventory.md) — every tracked config file, by area
 - **[ADRs](decisions/001-yadm-over-chezmoi.md)** — the why behind every decision
 - **[Specs](specs/2026-04-20-dotfiles-yadm-design.md)** — original brainstorm artefacts
 

@@ -50,6 +50,48 @@ systemctl --user start build-memory.service
 
 See [Memory management](../guides/memory-management.md) for the full set (`memory-watchdog`, `monitor-memory`, `analyze-memory-leaks`, `free-memory`, etc.).
 
+### Claude Code helpers
+
+| Command | Purpose |
+|---|---|
+| `cc-ask suggest "…"` / `explain "…"` / `tldr <cmd>` | Claude-powered shell-command suggestion / explanation |
+| `claude-bare` | OAuth-injecting Claude wrapper (CC's `--bare` mode disables OAuth, this works around it) |
+| `claude-memory-index` | Aggregates every per-project `~/.claude/projects/<sanitized-cwd>/memory/MEMORY.md` into one browseable list |
+| `claude-session-list` | Lists recent Claude Code sessions (across all projects) |
+| `claude-session-summary [session-id]` | AI summary of the current (or specified) Claude Code session |
+| `claude-usage-status [--json]` | Token-usage status; `--json` powers the `tmux2k` plugin |
+| `jsonl-to-markdown <session.jsonl>` | Convert a Claude Code session JSONL into a readable markdown transcript |
+| `markdown-tabs <files…>` | Build a single self-contained HTML page with tabbed markdown views (markdown-it + mermaid + highlight.js, no build) |
+| `watch-transcript.sh` | `tail -f`-style live view of the current Claude Code session JSONL |
+
+### Spotify
+
+| Command | Purpose |
+|---|---|
+| `sp` | DBus-based mpc-style Spotify controller |
+| `spotify-cli` | Heavier DBus control + metadata query script |
+
+### DSLR webcam
+
+| Command | Purpose |
+|---|---|
+| `dslrcam [-c\|-d\|-s\|-h]` | Connect / disconnect / status for using a DSLR as a virtual webcam (gphoto2 + ffmpeg → `/dev/video10`) |
+| `dslr-pipeline.sh` | The actual gphoto2 → ffmpeg pipe, invoked by `dslrcam` |
+
+### Misc
+
+| Command | Purpose |
+|---|---|
+| `godot-dev <cmd>` | Godot 4.6 development helper with NVIDIA GPU support |
+| `nvim-sync` | Push / pull the nvim-config submodule from any directory — no `cd ~/.config/nvim` dance |
+| `parse-d2l-toc <html>` | Parse a D2L (Brightspace) Table of Contents HTML file, extract course structure |
+| `transcribe.py` | OpenAI Whisper API wrapper (parallel batch transcription) |
+| `cleanup_folder` | Configurable folder cleanup (age / extension / size) |
+| `organize_images.sh <src> <dest>` | Sort images by date / type into a destination tree |
+| `monitor` | Spawn a tmux pane with `btop` + `nvtop` side-by-side |
+| `monitor-zram` | tmux-paned zram + memory monitor |
+| `eduroam-linux-TU_Dublin-TU_Dublin_Students.py` | Third-party eduroam installer (kept for reinstalls) |
+
 ## CLI utilities (third-party)
 
 | Tool | Purpose | Config |

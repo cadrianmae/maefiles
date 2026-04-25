@@ -85,9 +85,13 @@ nav:
   - Architecture: architecture.md
   - Guides:
       - Shell environment: guides/shell.md
+      - Neovim: guides/neovim.md
       - Desktop — KDE Plasma: guides/desktop-kde.md
       - Desktop — Niri: guides/desktop-niri.md
+      - Audio stack: guides/audio.md
       - Pomodoro timer: guides/pomodoro.md
+      - Git configuration: guides/git-config.md
+      - systemd user units: guides/systemd-user-units.md
       - Memory management: guides/memory-management.md
   - Runbooks:
       - New machine: runbooks/new-machine.md
@@ -102,6 +106,7 @@ nav:
   - Reference:
       - CLI tools: reference/cli-tools.md
       - Git aliases: reference/git-aliases.md
+      - Config inventory: reference/config-inventory.md
   - Decisions:
       - 001 — yadm over chezmoi: decisions/001-yadm-over-chezmoi.md
       - 002 — BWS over bw for secrets: decisions/002-bws-over-bw-for-secrets.md
