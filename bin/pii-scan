@@ -44,6 +44,7 @@ SAFE = [
     r"^git@github\.com$",
     r"^git@gitlab\.com$",
     r"^git@bitbucket\.org$",
+    r"^git@bitbucket\.com$",
     r"^[A-Za-z0-9._+-]+@users\.noreply\.github\.com$",
     r"^noreply@[A-Za-z0-9.-]+$",
     # Example / placeholder emails
@@ -147,6 +148,33 @@ def has_skip_pragma(path: Path) -> bool:
     return False
 
 
+# Filenames that are essentially nothing but hashes/identifiers; the regex
+# patterns produce nothing but false positives on these.
+AUTO_SKIP_NAMES = {
+    "lazy-lock.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+    "poetry.lock", "Cargo.lock", "Gemfile.lock", "go.sum", "uv.lock",
+}
+AUTO_SKIP_SUFFIXES = (".lock",)
+
+# Path substrings that auto-skip — these are tool-managed config files where
+# floating-point coefficients reliably trigger credit-card/student-id false
+# positives. Anything genuinely sensitive in these areas should be in
+# git-crypt scope, not validated by pattern matching.
+AUTO_SKIP_PATH_PARTS = (
+    "/easyeffects/output/",
+    "/easyeffects/input/",
+    "/easyeffects/autoload/",
+    "/easyeffects/irs/",
+)
+
+
+def has_auto_skip(path: Path) -> bool:
+    if path.name in AUTO_SKIP_NAMES or path.name.endswith(AUTO_SKIP_SUFFIXES):
+        return True
+    s = str(path)
+    return any(part in s for part in AUTO_SKIP_PATH_PARTS)
+
+
 def iter_files(paths: Iterable[str]) -> Iterable[Path]:
     skip_dirs = {".git", "node_modules", ".cache", "__pycache__", ".venv", "venv"}
     skip_exts = {".bin", ".jpg", ".jpeg", ".png", ".gif", ".wav", ".mp3", ".mp4",
@@ -216,6 +244,8 @@ def main() -> int:
         if not fp.is_file():
             continue
         if is_binary(fp):
+            continue
+        if has_auto_skip(fp):
             continue
         if has_skip_pragma(fp):
             continue

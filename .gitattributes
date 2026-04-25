@@ -2,3 +2,7 @@
 # .claude/* is NOT in crypt scope — it lives in its own private repo
 # (cadrianmae/claude-config) as a yadm submodule. See .gitmodules.
 docs/secret/**      filter=git-crypt diff=git-crypt
+
+# Bluetooth MAC addresses leak via filename + JSON device fields.
+# Encrypt the autoload bindings at-rest; working copy stays plaintext.
+.config/easyeffects/autoload/output/bluez_*  filter=git-crypt diff=git-crypt
