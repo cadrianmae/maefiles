@@ -26,6 +26,7 @@ Exit code:
 from __future__ import annotations
 
 import argparse
+import base64
 import os
 import re
 import subprocess
@@ -74,7 +75,10 @@ PATTERNS = [
     ("UK-postcode",       r"[A-Z]{1,2}[0-9][A-Z0-9]? [0-9][A-Z]{2}"),
     ("IBAN",              r"(IE|GB|DE|FR|ES|IT|NL|BE|AT|LU|PT|CH)[0-9]{2}[A-Z0-9]{10,30}"),
     ("credit-card",       r"4[0-9]{15}|5[1-5][0-9]{14}|3[47][0-9]{13}"),
-    ("legal-name",        r"Mae|,? Mae"),
+    # Surname is split + base64-encoded so the literal never appears in
+    # source (history was rewritten to purge it; this keeps the detector
+    # working without re-introducing the leak).
+    ("legal-name",        r"Mae\s+" + base64.b64decode("Q2FwYWNpdGU=").decode() + r"|" + base64.b64decode("Q2FwYWNpdGU=").decode() + r",?\s+Mae"),
     ("health-keyword",    r"\b(?:ADHD|autism|autistic|Asperger|medication|prescri\w+|diagnosis|therapist)\b"),
     ("IE-PPS",            r"\b[0-9]{7}[A-Z]{1,2}\b"),
 ]
