@@ -74,6 +74,14 @@ markdown_extensions:
 
 plugins:
   - search
+  - git-revision-date-localized:
+      type: timeago
+      enable_creation_date: true
+      fallback_to_build_date: true
+      enabled: true
+      strict: true
+      exclude:
+        - index.md
 
 exclude_docs: |
   secret/
