@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Record speaker SINK MONITOR (digital, what EE outputs) while playing baseline.
-# Usage: ~/Music/.record-baseline.sh <label>
+# Usage: ~/scripts/audio-tuning/record-baseline.sh <label>
 set -euo pipefail
 
 LABEL="${1:-no-effects}"
 SINK_MONITOR="alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
-INPUT="$HOME/Music/laptop-speaker-baseline.wav"
-OUTPUT="$HOME/Music/recording-${LABEL}.wav"
+INPUT="$HOME/Music/audio-tuning/laptop-speaker-baseline.wav"
+OUTPUT="$HOME/Music/audio-tuning/recording-${LABEL}.wav"
 
 if [ ! -f "$INPUT" ]; then
   echo "ERROR: $INPUT not found." >&2

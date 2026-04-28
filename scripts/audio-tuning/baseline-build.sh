@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Build a 4:55 laptop speaker test file from 4 YouTube segments + 15s brown noise.
 # All segments loudness-normalised to -16 LUFS (EBU R128) so they sound equally loud.
-# Output: ~/Music/laptop-speaker-baseline.wav
+# Output: ~/Music/audio-tuning/laptop-speaker-baseline.wav
 set -euo pipefail
 
-OUT="$HOME/Music/laptop-speaker-baseline.wav"
-TMP="$HOME/Music/.baseline-tmp"
+OUT="$HOME/Music/audio-tuning/laptop-speaker-baseline.wav"
+TMP="$HOME/Music/audio-tuning/.baseline-tmp"
 TARGET_LUFS=-14    # Spotify/YouTube/Tidal Normal
 TARGET_TP=-1.0     # true peak ceiling
 TARGET_LRA=11      # loudness range

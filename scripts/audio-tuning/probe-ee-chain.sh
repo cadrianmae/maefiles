@@ -3,8 +3,8 @@
 # Records 5 WAVs (one per stage) + analyses per-band RMS to show what each plugin does.
 set -euo pipefail
 
-INPUT="$HOME/Music/laptop-speaker-baseline.wav"
-OUTDIR="$HOME/Music/ee-probe-$(date +%H%M%S)"
+INPUT="$HOME/Music/audio-tuning/laptop-speaker-baseline.wav"
+OUTDIR="$HOME/Music/audio-tuning/ee-probe-$(date +%H%M%S)"
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
 

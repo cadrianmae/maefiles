@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # Probe each EE plugin output by manually linking taps via pw-link.
-# Usage: ~/Music/.probe-ee-chain-spotify.sh [duration_seconds] [label]
+# Usage: ~/scripts/audio-tuning/probe-ee-chain-spotify.sh [duration_seconds] [label]
 set -euo pipefail
 
 DURATION="${1:-60}"
 LABEL="${2:-spotify}"
-OUTDIR="$HOME/Music/ee-probe-${LABEL}-$(date +%H%M%S)"
+OUTDIR="$HOME/Music/audio-tuning/ee-probe-${LABEL}-$(date +%H%M%S)"
 mkdir -p "$OUTDIR"
 cd "$OUTDIR"
 
