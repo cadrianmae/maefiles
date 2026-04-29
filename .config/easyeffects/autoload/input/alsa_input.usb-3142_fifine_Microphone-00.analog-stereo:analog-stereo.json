@@ -1,0 +1,6 @@
+{
+    "device": "alsa_input.usb-3142_fifine_Microphone-00.analog-stereo",
+    "device-description": "fifine Microphone Analog Stereo",
+    "device-profile": "analog-stereo",
+    "preset-name": "Fifine Voice Calls"
+}
