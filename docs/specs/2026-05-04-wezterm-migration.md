@@ -140,3 +140,38 @@ The migration is "successful" if **all** of:
 6. No "I wish I had kitty's X" entries in the soak journal that aren't trivially portable to WezTerm.
 
 If any fail at end of soak, decision is rollback or extend.
+
+## 9. References
+
+Research consulted during the 2026-05-03/04 decision conversation.
+
+**Official documentation:**
+- Kitty homepage: https://sw.kovidgoyal.net/kitty/
+- Kitty on GitHub: https://github.com/kovidgoyal/kitty
+- Kittens (extension framework): https://sw.kovidgoyal.net/kitty/kittens_intro/
+- Kitty integrations index: https://sw.kovidgoyal.net/kitty/integrations/
+- WezTerm config files (paths + precedence): https://wezterm.org/config/files.html
+
+**Community discussion:**
+- r/KittyTerminal: https://www.reddit.com/r/KittyTerminal/
+
+**Deep-dive write-ups:**
+- Mastering kitty terminal — Paul Nameless: https://paul-nameless.com/mastering-kitty.html
+- Kitty customisation tour — It's FOSS: https://itsfoss.com/kitty-customization/
+- Kitty Terminal — Practicalli Engineering Playbook: https://practical.li/engineering-playbook/os/command-line/kitty-terminal/
+
+**Ecosystem (relevant to the migration):**
+- image.nvim (kitty graphics in nvim): https://github.com/3rd/image.nvim
+- smart-splits.nvim (vim-tmux-navigator successor for kitty/wezterm): https://github.com/mrjones2014/smart-splits.nvim
+- snacks.nvim (folke's toolkit, includes kitty graphics): https://github.com/folke/snacks.nvim
+
+**Comparisons (informed the wezterm choice):**
+- Terminal Trove compatibility matrix: https://terminaltrove.com/compare/terminals/
+- Modern Terminals Showdown — Code Miner: https://blog.codeminer42.com/modern-terminals-alacritty-kitty-and-ghostty/
+- Choosing a Terminal on macOS (2025) — Chris Evans: https://medium.com/@dynamicy/choosing-a-terminal-on-macos-2025-iterm2-vs-ghostty-vs-wezterm-vs-kitty-vs-alacritty-d6a5e42fd8b3
+- Switching from Ghostty back to Kitty — linkarzu: https://linkarzu.com/posts/terminals/ghostty-to-kitty/
+
+**Maintainer reputation calibration (factored into the kitty-as-platform concern):**
+- Goodbye, Kitty — Gavin D. Howard: https://gavinhoward.com/2022/02/goodbye-kitty/
+- HN thread on Kovid's communication style: https://news.ycombinator.com/item?id=24644055
+- Why Terminal Multiplexers Are an Anti-Pattern (Kovid's view) — Jon Roosevelt: https://jonroosevelt.com/blog/terminal-design-philosophy-rethinking-multiplexers
