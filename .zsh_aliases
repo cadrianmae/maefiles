@@ -39,3 +39,6 @@ alias sss-now='ssh snappy.home systemctl --user start snappy-ss.service'
 # Browse every per-project Claude MEMORY.md in one bat view.
 # Null-delim + xargs for space-safe paths; single bat invocation = one pager.
 alias clm='find ~/.claude/projects -maxdepth 3 -name MEMORY.md -print0 | xargs -0 bat'
+
+# Edit wezterm config
+alias wezconfig='$EDITOR ~/.config/wezterm/wezterm.lua'
