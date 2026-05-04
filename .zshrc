@@ -73,7 +73,7 @@ if tmux list-sessions -F "#{session_attached}" 2>/dev/null | grep -q "^0$"; then
 else
   ZSH_TMUX_AUTOCONNECT=false
 fi
-ZSH_TMUX_AUTOSTART=true
+ZSH_TMUX_AUTOSTART=false
 
 # Which plugins would you like to load?
 # Standard plugins can be found in $ZSH/plugins/
