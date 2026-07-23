@@ -26,9 +26,13 @@ alias docker-status="systemctl --user status docker"
 alias docker-log="journalctl --user -u docker.service -f"
 alias docker-enable="systemctl --user enable docker"
 
-# Kitty theme switching
-alias kitty-light='kitty +kitten themes --reload-in=all "Catppuccin-Latte"'
-alias kitty-dark='kitty +kitten themes --reload-in=all "Catppuccin-Macchiato"'
+# Theme switching — lumae via tinty (kitty + tmux + nvim in one command)
+alias kitty-light='tinty apply base24-lumae-dawn'
+alias kitty-dark='tinty apply base24-lumae-midnight'
+# other lumae flavors:
+alias kitty-dusk='tinty apply base24-lumae-dusk'
+alias kitty-sand='tinty apply base24-lumae-earth-sand'
+alias kitty-cocoa='tinty apply base24-lumae-earth-cocoa'
 
 # Snappy UI screenshot timer (on Pi)
 alias sss-start='ssh snappy.home systemctl --user start snappy-ss.timer'
@@ -40,5 +44,10 @@ alias sss-now='ssh snappy.home systemctl --user start snappy-ss.service'
 # Null-delim + xargs for space-safe paths; single bat invocation = one pager.
 alias clm='find ~/.claude/projects -maxdepth 3 -name MEMORY.md -print0 | xargs -0 bat'
 
+# gitleaks PII rule pack — see ~/git/github.com/cadrianmae/gitleaks-pii-rules
+alias piiscan='gitleaks detect --config ~/.config/gitleaks/pii-rules.toml --no-banner'
+
 # Edit wezterm config
 alias wezconfig='$EDITOR ~/.config/wezterm/wezterm.lua'
+
+alias gearlever='flatpak run it.mijorus.gearlever'

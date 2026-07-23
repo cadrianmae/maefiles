@@ -1,0 +1,13 @@
+# tinty — lumae theming (maebrand). Sources lumae schemes from the maebrand repo.
+default-scheme = "base24-lumae-dusk"
+
+[schemes]
+path = "/home/cadrianmae/git/github.com/cadrianmae/maebrand/schemes"
+
+# kitty: reload without remote control via current-theme.conf + SIGUSR1
+[[items]]
+name = "kitty"
+path = "https://github.com/tinted-theming/tinted-kitty"
+themes-dir = "colors"
+supported-systems = ["base24"]
+hook = "cp -f %f ~/.config/kitty/current-theme.conf && pkill -USR1 -x kitty || true"
