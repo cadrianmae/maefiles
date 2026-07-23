@@ -1,0 +1,12 @@
+title: Runbooks
+nav:
+  - New machine: new-machine.md
+  - Loading keys: loading-keys.md
+  - Rotate secret: rotate-secret.md
+  - Recovery: recovery.md
+  - GPG key recovery: gpg-key-recovery.md
+  - Publish claude-config: publish-claude-config.md
+  - Upgrade Fedora: upgrade-fedora.md
+  - Troubleshoot NVIDIA: troubleshoot-nvidia.md
+  - Troubleshoot KDE applets: troubleshoot-kde-applets.md
+  - ...

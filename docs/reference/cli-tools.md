@@ -78,6 +78,24 @@ See [Memory management](../guides/memory-management.md) for the full set (`memor
 | `dslrcam [-c\|-d\|-s\|-h]` | Connect / disconnect / status for using a DSLR as a virtual webcam (gphoto2 + ffmpeg → `/dev/video10`) |
 | `dslr-pipeline.sh` | The actual gphoto2 → ffmpeg pipe, invoked by `dslrcam` |
 
+### Security scanning
+
+| Command | Purpose |
+|---|---|
+| `piiscan` | Scan for PII using [gitleaks-pii-rules](https://github.com/cadrianmae/gitleaks-pii-rules) (own private repo, 15 default rules + 3 strict). Alias for `gitleaks detect --config ~/.config/gitleaks/pii-rules.toml --no-banner`. Inherits gitleaks' 132 built-in secret rules via the pack's internal `[extend] useDefault = true`. |
+
+```bash
+piiscan --no-git --source ./dir            # ad-hoc directory scan
+piiscan --no-git --source ./file.json      # single file
+piiscan                                    # current git repo (history + working tree)
+
+piiscan --no-git --source ./dir \
+  --report-format json --report-path /tmp/leaks.json
+jq -r 'group_by(.RuleID) | map({rule:.[0].RuleID, count:length}) | sort_by(-.count)' /tmp/leaks.json
+```
+
+Pack lives at `~/git/github.com/cadrianmae/gitleaks-pii-rules/pii-rules.toml`; symlinked from `~/.config/gitleaks/pii-rules.toml` (auto-tracks fixes). For per-repo `.gitleaks.toml` integration, see the pack's README.
+
 ### Misc
 
 | Command | Purpose |

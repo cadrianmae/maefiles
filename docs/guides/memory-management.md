@@ -90,7 +90,86 @@ After the mitigations above, on a 16 GB system:
 | Monitor | 75–85 % | Watch `analyze-memory-leaks` output |
 | Critical | > 85 % | systemd timer alerts; consider `free-memory` |
 
+## Swap and zswap
+
+`zswap` is a compressed cache in RAM that sits in front of the disk swap file. Pages
+are compressed and kept in RAM; only when the compressed pool fills do they spill to
+the slow disk swap. On this 16 GB box it is the difference between a graceful slowdown
+and a hard freeze under memory pressure.
+
+### Applied configuration
+
+| Parameter | Value | Why |
+|---|---|---|
+| `enabled` | `Y` | Turns the compressed cache on |
+| `compressor` | `zstd` | ~2x better ratio than the `lzo` default; more fits in RAM before disk |
+| `zpool` | `zsmalloc` | Highest density pool — holds more compressed pages than `zbud`/`z3fold` |
+| `max_pool_percent` | `25` | Up to 25 % of RAM used for the compressed pool |
+
+### Runtime (this boot only)
+
+zswap is built into the kernel, so parameters live under `/sys/module/zswap/parameters/`.
+Compressor changes apply to newly swapped pages only.
+
+```bash
+echo zstd | sudo tee /sys/module/zswap/parameters/compressor
+echo 25   | sudo tee /sys/module/zswap/parameters/max_pool_percent
+```
+
+### Permanent (kernel cmdline)
+
+Fedora 43, UEFI + systemd-boot (BLS). `grubby` updates all boot entries:
+
+```bash
+sudo grubby --update-kernel=ALL \
+  --args="zswap.enabled=1 zswap.compressor=zstd zswap.max_pool_percent=25 zswap.zpool=zsmalloc"
+```
+
+Verify after reboot:
+
+```bash
+grep -r . /sys/module/zswap/parameters/
+```
+
+### swappiness
+
+Desktop should prefer reclaiming cache over swapping. Lower from the default 60:
+
+```bash
+echo 'vm.swappiness=10' | sudo tee /etc/sysctl.d/99-swappiness.conf
+sudo sysctl vm.swappiness=10
+```
+
 ## Common-issue playbook
+
+### Minecraft / JVM GC freeze
+
+Symptom: hard freeze during garbage collection, RAM pinned near 100 %, deep disk swap.
+
+Root cause is **not** the GC algorithm — it is swap thrashing. When the JVM collector
+walks the heap, every live object must be resident; pages sitting in disk swap fault
+back in one at a time (disk is ~1000x slower than RAM). A healthy allocation rate
+(100-300 MB/s) and a low-pause collector (ZGC) both confirm GC is not the culprit.
+
+Diagnose during a freeze — `si`/`so` (swap in/out) spike hard, GC would not:
+
+```bash
+vmstat 1
+```
+
+Fixes, in order:
+
+1. **Do not overcommit RAM.** PrismLauncher sets `MinMemAlloc=MaxMemAlloc` by default,
+   which becomes `-Xms8G -Xmx8G` — the JVM commits and touches the full 8 GB at launch.
+   Set Min below Max (e.g. Min 2048, Max 5632) so the heap grows only as needed.
+   Edit in PrismLauncher (Edit Instance -> Settings -> Memory) or in the instance's
+   `instance.cfg`.
+2. Enable zswap with `zstd` (see above) so overflow compresses in RAM first.
+3. Lower `vm.swappiness` to 10.
+4. Close RAM hogs (browser, Qobuz) before launching.
+
+16 GB is tight for an 8 GB heap alongside KDE + browser. No JVM flag creates physical
+RAM; the fix is fitting the working set, not tuning the collector.
 
 ### Zen growth
 

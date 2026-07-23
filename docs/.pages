@@ -1,0 +1,8 @@
+nav:
+  - Home: index.md
+  - architecture.md
+  - guides
+  - runbooks
+  - reference
+  - decisions
+  - specs

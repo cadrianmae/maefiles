@@ -1,0 +1,12 @@
+title: Guides
+nav:
+  - Shell environment: shell.md
+  - Neovim: neovim.md
+  - Desktop — KDE Plasma: desktop-kde.md
+  - Desktop — Niri: desktop-niri.md
+  - Audio stack: audio.md
+  - Pomodoro timer: pomodoro.md
+  - Git configuration: git-config.md
+  - systemd user units: systemd-user-units.md
+  - Memory management: memory-management.md
+  - ...

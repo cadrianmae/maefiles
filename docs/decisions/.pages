@@ -1,0 +1,9 @@
+title: Decisions
+nav:
+  - 001 — yadm over chezmoi: 001-yadm-over-chezmoi.md
+  - 002 — BWS over bw for secrets: 002-bws-over-bw-for-secrets.md
+  - 003 — claude-config deferred: 003-claude-config-deferred.md
+  - 004 — per-machine SSH keys: 004-per-machine-ssh-keys.md
+  - 005 — MkDocs + Material: 005-mkdocs-material-for-rendering.md
+  - 006 — yadm stash -u footgun: 006-yadm-stash-u-footgun.md
+  - ...

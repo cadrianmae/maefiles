@@ -1,0 +1,6 @@
+title: Reference
+nav:
+  - CLI tools: cli-tools.md
+  - Git aliases: git-aliases.md
+  - Config inventory: config-inventory.md
+  - ...
