@@ -276,3 +276,34 @@ env-key() {
       ;;
   esac
 }
+
+# ---------------------------------------------------------------------------
+# gclone - clone a repo into ./<owner>/<repo> based on its URL
+# Usage: gclone <url> [extra git-clone args...]
+#   gclone https://github.com/cadrianmae/aa-26     -> ./cadrianmae/aa-26
+#   gclone git@github.com:skooter500/boids.git     -> ./skooter500/boids
+# ---------------------------------------------------------------------------
+gclone() {
+  local url="$1"
+  if [[ -z "$url" ]]; then
+    echo "Usage: gclone <url> [git-clone-args...]"
+    return 1
+  fi
+  shift  # remaining args pass through to git clone
+
+  # Parse OWNER/REPO from the URL, covering both forms:
+  #   https://github.com/OWNER/REPO(.git)   and   git@github.com:OWNER/REPO(.git)
+  local owner repo
+  local stripped="${url%.git}"   # drop a trailing .git if present
+  repo="${stripped##*/}"          # last path segment
+  local rest="${stripped%/*}"     # everything before the repo
+  owner="${rest##*[:/]}"          # segment after the last ':' or '/'
+
+  if [[ -z "$owner" || -z "$repo" ]]; then
+    echo "gclone: could not parse owner/repo from '$url'" >&2
+    return 1
+  fi
+
+  mkdir -p "$owner"
+  git clone "$@" -- "$url" "$owner/$repo"
+}

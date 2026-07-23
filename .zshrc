@@ -95,6 +95,12 @@ plugins=(
 
 source $ZSH/oh-my-zsh.sh
 
+# lumae/base16 fix: FSH styles comments fg=black, but base16 themes map
+# color0 -> background, making comments invisible. Use a visible grey.
+typeset -gA FAST_HIGHLIGHT_STYLES ZSH_HIGHLIGHT_STYLES
+FAST_HIGHLIGHT_STYLES[comment]='fg=242'
+ZSH_HIGHLIGHT_STYLES[comment]='fg=242'
+
 # User configuration
 
 # export MANPATH="/usr/local/man:$MANPATH"
@@ -133,7 +139,8 @@ eval "$(pyenv virtualenv-init -)"
 # bindkey '^v' edit-command-line
 MODE_INDICATOR="%F{blue}■%f"
 INSERT_MODE_INDICATOR="%F{green}▼%f"
-PROMPT="$PROMPT\$(vi_mode_prompt_info) \$(direnv_prompt_info) "
+# Override robbyrussell's PROMPT char: green ➜ on success, red ✗ on failure
+PROMPT="%(?:%{$fg_bold[green]%}%1{➜%} :%{$fg_bold[red]%}%1{✘%} ) %{$fg[cyan]%}%c%{$reset_color%} \$(git_prompt_info)\$(vi_mode_prompt_info) \$(direnv_prompt_info) "
 RPROMPT="%F{green}%D{%Y-%m-%d %H:%M:%S}%f \$(direnv_rprompt_info) $RPROMPT"
 
 zstyle ':autocomplete:*' min-input 3
