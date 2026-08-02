@@ -1,0 +1,11 @@
+id = "mae/sysmon"
+name = "sysmon"
+plugin_api = 16
+version = "0.1.0"
+author = "mae"
+license = "MIT"
+description = "Unified system monitor: CPU, RAM, pressure, GPU, swap, disk"
+
+[[widget]]
+id    = "sysmon"
+entry = "widget.luau"

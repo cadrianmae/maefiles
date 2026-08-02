@@ -1,0 +1,8 @@
+[[plugin]]
+id = "mae/sysmon"
+name = "sysmon"
+version = "0.1.0"
+author = "mae"
+license = "MIT"
+description = "Unified system monitor: CPU, RAM, pressure, GPU, swap, disk"
+plugin_api = 16
