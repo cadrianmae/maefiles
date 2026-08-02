@@ -15,10 +15,14 @@ local TABLE = {
 }
 
 function thresholds.level(metric, value)
+  -- Distinguish sensor read failures from metric name typos: an unreadable
+  -- sensor (nil, non-number value) must render visually distinct from "healthy"
+  -- to avoid silent failures like the sibling tool's pressure-file bug. An
+  -- unknown metric name IS a code bug but not a sensor failure -- don't alarm
+  -- the user for a typo in the dashboard config.
+  if type(value) ~= "number" then return "unknown" end
   local t = TABLE[metric]
-  -- An unknown metric must not be styled as alarming. Silent "ok" beats a
-  -- red bar caused by a typo in a metric name.
-  if not t or type(value) ~= "number" then return "ok" end
+  if not t then return "ok" end
   if value >= t.critical then return "critical" end
   if value >= t.activity then return "activity" end
   return "ok"
@@ -27,6 +31,7 @@ end
 function thresholds.color(level)
   if level == "critical" then return "error" end
   if level == "activity" then return "primary" end
+  if level == "unknown" then return "on_surface/0.4" end
   return "on_surface"
 end
 

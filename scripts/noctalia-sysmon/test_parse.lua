@@ -104,5 +104,23 @@ check("ok maps to on_surface",           th.color("ok") == "on_surface")
 check("activity maps to primary",        th.color("activity") == "primary")
 check("critical maps to error",          th.color("critical") == "error")
 
+-- Activity boundary tests for metrics that were missing them
+check("disk just below activity",        th.level("disk_pct", 79) == "ok")
+check("disk at activity",                th.level("disk_pct", 80) == "activity")
+check("disk just below critical",        th.level("disk_pct", 91) == "activity")
+check("cpu temp just below activity",    th.level("cpu_temp", 74) == "ok")
+check("cpu temp at activity",            th.level("cpu_temp", 75) == "activity")
+check("cpu temp just below critical",    th.level("cpu_temp", 89) == "activity")
+check("gpu temp just below activity",    th.level("gpu_temp", 74) == "ok")
+check("gpu temp at activity",            th.level("gpu_temp", 75) == "activity")
+check("gpu temp just below critical",    th.level("gpu_temp", 86) == "activity")
+
+-- Unreadable sensor distinction from unknown metric name
+check("nil value is unknown, not ok",    th.level("cpu_usage", nil) == "unknown")
+check("non-number value is unknown",     th.level("cpu_usage", "abc") == "unknown")
+check("unknown metric name stays ok",    th.level("nonsense", 999) == "ok")
+check("unknown maps to a dimmed token",  th.color("unknown") == "on_surface/0.4")
+check("unknown is not the same as ok",   th.color("unknown") ~= th.color("ok"))
+
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
