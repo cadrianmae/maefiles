@@ -35,6 +35,12 @@ if [[ -x "$HOME/bin/pii-scan" ]]; then
       # Skip files in git-crypt scope — PII is OK there, it'll be encrypted
       filter=$(yadm check-attr filter -- "$f" 2>/dev/null | awk -F': ' '{print $NF}')
       [[ "$filter" == "git-crypt" ]] && continue
+      # Skip submodule gitlinks — the parent only commits a SHA, never the
+      # submodule's file contents, so scanning that working tree is a false
+      # positive (and the submodule's own repo is scanned on its own commits).
+      if yadm ls-files --stage -- "$f" 2>/dev/null | grep -q '^160000 '; then
+        continue
+      fi
       # Scan the file
       if ! "$HOME/bin/pii-scan" "$HOME/$f" >/dev/null 2>&1; then
         offenders="$offenders$f"$'\n'
