@@ -1,0 +1,12 @@
+[sie][Filter#0]
+frequency=80
+slope=1
+type=1
+width=1
+
+[soe][Filter#0]
+bypass=true
+frequency=40
+slope=1
+type=1
+width=1
