@@ -199,6 +199,16 @@ check("intel percent clamps at 100",
 check("intel percent zero timedelta is 0",
       parse.intel_percent(0, 0, 100, 0) == 0)
 
+-- df --output=avail,size -B1 / | tail -1 prints a header then one data line
+-- of bytes; the test fixes literal figures so a used_pct rounding regression
+-- can't creep back in silently.
+local d = parse.df("Avail        Size\n412000000000 900000000000\n")
+check("df returns a table", type(d) == "table")
+check("df avail parsed", d.avail == 412000000000)
+check("df size parsed", d.size == 900000000000)
+check("df used percent", d.used_pct == 54)
+check("df garbage returns nil", parse.df("no numbers here") == nil)
+
 -- Drift test: widget.luau inlines parse.luau and thresholds.luau verbatim
 -- (noctalia's Luau runtime has no require/load, see lib/parse.luau header).
 -- Without this check the inlined copy and the library file can diverge

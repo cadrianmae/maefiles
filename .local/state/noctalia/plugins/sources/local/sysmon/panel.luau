@@ -121,6 +121,19 @@ function parse.intel_percent(prev_render, prev_ts, render, ts)
   if pct > 100 then return 100 end
   return pct
 end
+
+-- df --output=avail,size -B1 prints a header then one data line of bytes.
+function parse.df(text)
+  local avail, size = string.match(text, "(%d+)%s+(%d+)")
+  if not avail then return nil end
+  avail, size = tonumber(avail), tonumber(size)
+  if size == 0 then return nil end
+  return {
+    avail = avail,
+    size = size,
+    used_pct = math.floor(((size - avail) * 100) / size + 0.5),
+  }
+end
 -- END INLINED parse.luau
 
 -- BEGIN INLINED thresholds.luau
@@ -186,6 +199,11 @@ local gpu_available = { nvidia = false, intel = false }
 local intel_prev = { render = nil, ts = nil }
 local streams = { nvidia = nil, intel = nil }
 local stream_pids = { nvidia = nil, intel = nil }
+
+-- Disk free has no /proc source; it needs statvfs, which the Luau API does
+-- not expose. See refresh_disk below (defined after render(), which its
+-- callback captures as a local upvalue).
+local disk = nil
 
 local HELPER = "/usr/libexec/ksystemstats_intel_helper"
 
@@ -289,6 +307,13 @@ local function build_rows()
     table.insert(rows, metric_row("device-sd-card", "RAM", "--", "", "unknown"))
   end
 
+  if disk then
+    table.insert(rows, metric_row("database", "DISK",
+      disk.used_pct .. "%",
+      string.format("%.0f GB free", disk.avail / 1073741824),
+      th.level("disk_pct", disk.used_pct)))
+  end
+
   table.insert(rows, ui.label({ text = "PRESSURE", color = "on_surface", fontWeight = "bold" }))
   for _, kind in ipairs({ "cpu", "memory", "io" }) do
     local text = noctalia.readFile("/proc/pressure/" .. kind)
@@ -328,6 +353,18 @@ local function render()
     }),
     ui.column({ gap = 6 }, build_rows()),
   }))
+end
+
+-- Disk free changes slowly and has no /proc source (needs statvfs, which the
+-- Luau API does not expose), so it refreshes once on panel open rather than
+-- joining the per-tick poll loop.
+local function refresh_disk()
+  noctalia.runAsync("df --output=avail,size -B1 / | tail -1", function(result)
+    if result and result.stdout then
+      disk = parse.df(result.stdout)
+      render()
+    end
+  end)
 end
 
 -- Streams live only while the panel is open. Neither GPU exposes utilisation
@@ -455,6 +492,6 @@ local function stop_streams()
   gpu_available.nvidia, gpu_available.intel = false, false
 end
 
-function onOpen() start_streams(); render() end
+function onOpen() start_streams(); refresh_disk(); render() end
 function onClose() stop_streams(); panel.close() end
 function onExit(signal, reason) stop_streams() end

@@ -120,6 +120,19 @@ function parse.intel_percent(prev_render, prev_ts, render, ts)
   if pct > 100 then return 100 end
   return pct
 end
+
+-- df --output=avail,size -B1 prints a header then one data line of bytes.
+function parse.df(text)
+  local avail, size = string.match(text, "(%d+)%s+(%d+)")
+  if not avail then return nil end
+  avail, size = tonumber(avail), tonumber(size)
+  if size == 0 then return nil end
+  return {
+    avail = avail,
+    size = size,
+    used_pct = math.floor(((size - avail) * 100) / size + 0.5),
+  }
+end
 -- END INLINED parse.luau
 
 -- BEGIN INLINED thresholds.luau
