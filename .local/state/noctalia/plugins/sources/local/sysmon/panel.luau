@@ -165,12 +165,31 @@ local th = thresholds
 -- nothing runs in the background when it is shut. gpu.nvidia/gpu.intel stay
 -- nil until the first line arrives from each stream, and are wiped again on
 -- close so a reopened panel never shows a stale reading from before.
+--
+-- gpu_available is tracked separately from gpu: available means "this
+-- machine has the tool/binary and we started (or tried to start) its
+-- stream", data (gpu.nvidia/gpu.intel) means "a line has actually arrived".
+-- A GPU can be available with no data yet (first tick) or after its stream
+-- dies mid-session -- that must render as a dimmed "--" row, not vanish,
+-- same as every other row in this panel. Absent (no nvidia-smi / no helper
+-- binary) is the only case that omits the row entirely -- there is no such
+-- GPU to report on.
 local gpu = { nvidia = nil, intel = nil }
+local gpu_available = { nvidia = false, intel = false }
 local intel_prev = { render = nil, ts = nil }
 local streams = { nvidia = nil, intel = nil }
+local stream_pids = { nvidia = nil, intel = nil }
 
 local HELPER = "/usr/libexec/ksystemstats_intel_helper"
-local NVIDIA_CMD = "nvidia-smi dmon -d 2 -s pucm"
+
+-- Wrapped in `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'`: `exec` replaces the
+-- shell with the real program in place, so `$$` (the shell's own PID,
+-- printed before the replacement happens) IS the final process's PID, not a
+-- wrapper left behind as an orphan. This is how stop_streams recovers an
+-- exact, killable PID from a runStream that returns no handle -- see the
+-- long comment on start_streams for why that's necessary.
+local NVIDIA_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec nvidia-smi dmon -d 2 -s pucm'"
+local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 
 local function pct_of(used, total)
   if total == 0 then return 0 end
@@ -216,15 +235,27 @@ local function build_rows()
     "",
     th.level("cpu_temp", cpu_temp)))
 
-  if gpu.nvidia then
-    table.insert(rows, metric_row("device-desktop", "NVIDIA",
-      gpu.nvidia.usage .. "%",
-      gpu.nvidia.temp .. " C",
-      th.level("gpu_temp", gpu.nvidia.temp)))
+  -- Available-but-no-data-yet (or a stream that died mid-session) renders
+  -- as a dimmed "--" row, same as every other unreadable sensor in this
+  -- panel -- only a genuinely absent GPU (no nvidia-smi / no helper binary)
+  -- omits the row entirely.
+  if gpu_available.nvidia then
+    if gpu.nvidia then
+      table.insert(rows, metric_row("device-desktop", "NVIDIA",
+        gpu.nvidia.usage .. "%",
+        gpu.nvidia.temp .. " C",
+        th.level("gpu_temp", gpu.nvidia.temp)))
+    else
+      table.insert(rows, metric_row("device-desktop", "NVIDIA", "--", "", "unknown"))
+    end
   end
-  if gpu.intel then
-    table.insert(rows, metric_row("device-desktop", "INTEL",
-      gpu.intel .. "%", "", "ok"))
+  if gpu_available.intel then
+    if gpu.intel then
+      table.insert(rows, metric_row("device-desktop", "INTEL",
+        gpu.intel .. "%", "", "ok"))
+    else
+      table.insert(rows, metric_row("device-desktop", "INTEL", "--", "", "unknown"))
+    end
   end
 
   local meminfo = noctalia.readFile("/proc/meminfo")
@@ -307,51 +338,81 @@ end
 -- the plugin" -- none of which happen on a panel close. Calling the
 -- documented-nonexistent handle.stop() is exactly what threw
 -- "attempt to index boolean with 'stop'" the first time this ran live.
--- The only way to actually stop these two specific processes from Lua is to
--- kill them by their exact command line via a one-shot runAsync (pkill
--- excludes its own invocation by default, so this cannot self-kill
--- noctalia). Track "did we start it" as a bool, not a fictional handle.
+--
+-- A first fix used `pkill -f '<exact command>'` via runAsync. Code review
+-- rejected that: pkill -f substring-matches ANY process's argv system-wide,
+-- with no PID tracking. Concretely it would (1) kill a user's own manually
+-- run `nvidia-smi dmon -d 2 -s pucm` in a terminal, and (2) with noctalia
+-- loaded once per output (this machine runs 2: eDP-1 and HDMI-A-1), each
+-- monitor's panel starts its own identically-worded stream -- pkill -f
+-- cannot tell them apart, so closing one monitor's panel would kill the
+-- other monitor's still-open stream. Neither is acceptable.
+--
+-- Fix: recover the exact PID with no pattern matching at all. Each command
+-- is wrapped so the shell prints its own PID before `exec`-ing into the
+-- real program (see NVIDIA_CMD/HELPER_CMD above) -- `exec` replaces the
+-- shell in place, so that PID IS the real process's PID, not a wrapper. The
+-- sentinel line is intercepted in onLine before it ever reaches the parser
+-- (parse.nvidia_dmon/parse.intel_helper also independently reject it as
+-- unparseable -- pinned in test_parse.lua -- so this is belt-and-suspenders,
+-- not the only guard). stop_streams then kills exactly that PID and
+-- nothing else, which also closes the reopen race a reviewer flagged: an
+-- exact `kill <pid>` can never touch a newly started stream's new PID.
 local function start_streams()
-  if noctalia.commandExists("nvidia-smi") and not streams.nvidia then
-    streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
-      local n = parse.nvidia_dmon(line)
-      if n then gpu.nvidia = n; render() end
-    end)
+  if noctalia.commandExists("nvidia-smi") then
+    gpu_available.nvidia = true
+    if not streams.nvidia then
+      streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
+        local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
+        if pid then stream_pids.nvidia = pid; return end
+        local n = parse.nvidia_dmon(line)
+        if n then gpu.nvidia = n; render() end
+      end)
+    end
   end
 
   -- Ships with ksystemstats and already carries cap_perfmon, so no
   -- system-wide perf_event_paranoid change is needed. Absent if KDE's
-  -- ksystemstats package is uninstalled, in which case the Intel row is
-  -- simply omitted (build_rows only adds it when gpu.intel is set).
-  if noctalia.fileExists(HELPER) and not streams.intel then
-    streams.intel = noctalia.runStream(HELPER, function(line)
-      local i = parse.intel_helper(line)
-      if not i then return end
-      -- First line has no prior sample to diff against -- seed the
-      -- baseline and skip rendering rather than showing a bogus 0%.
-      if intel_prev.ts then
-        gpu.intel = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
-        render()
-      end
-      intel_prev.render, intel_prev.ts = i.render, i.timestamp
-    end)
+  -- ksystemstats package is uninstalled, in which case gpu_available.intel
+  -- stays false and the INTEL row is omitted entirely (there is no such
+  -- GPU-monitoring path to report on, as opposed to one that has data yet).
+  if noctalia.fileExists(HELPER) then
+    gpu_available.intel = true
+    if not streams.intel then
+      streams.intel = noctalia.runStream(HELPER_CMD, function(line)
+        local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
+        if pid then stream_pids.intel = pid; return end
+        local i = parse.intel_helper(line)
+        if not i then return end
+        -- First line has no prior sample to diff against -- seed the
+        -- baseline and skip rendering rather than showing a bogus 0%.
+        if intel_prev.ts then
+          gpu.intel = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
+          render()
+        end
+        intel_prev.render, intel_prev.ts = i.render, i.timestamp
+      end)
+    end
   end
 end
 
 local function stop_streams()
-  if streams.nvidia then
-    noctalia.runAsync("pkill -f '" .. NVIDIA_CMD .. "'")
-    streams.nvidia = nil
+  if stream_pids.nvidia then
+    noctalia.runAsync("kill " .. stream_pids.nvidia)
+    stream_pids.nvidia = nil
   end
-  if streams.intel then
-    noctalia.runAsync("pkill -f '" .. HELPER .. "'")
-    streams.intel = nil
+  if stream_pids.intel then
+    noctalia.runAsync("kill " .. stream_pids.intel)
+    stream_pids.intel = nil
   end
+  streams.nvidia, streams.intel = nil, nil
   intel_prev.render, intel_prev.ts = nil, nil
-  -- Wipe readings too, not just the handles: a reopened panel must show
-  -- "no data yet" rather than a stale figure from the stream that just
-  -- stopped, until fresh lines arrive.
+  -- Wipe readings and availability, not just the pids: a reopened panel
+  -- must show "no data yet" rather than a stale figure from the stream
+  -- that just stopped, and must re-probe commandExists/fileExists rather
+  -- than trust a status from before close.
   gpu.nvidia, gpu.intel = nil, nil
+  gpu_available.nvidia, gpu_available.intel = false, false
 end
 
 function onOpen() start_streams(); render() end

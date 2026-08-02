@@ -169,12 +169,21 @@ check("dmon real fixture gives numeric temp", type(n2) == "table" and type(n2.te
 check("dmon garbage returns nil", parse.nvidia_dmon("not dmon data at all") == nil)
 check("dmon nil line returns nil", parse.nvidia_dmon(nil) == nil)
 
+-- panel.luau's NVIDIA_CMD/HELPER_CMD wrap each stream in
+-- `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'` so stop_streams can recover an
+-- exact, killable PID (see panel.luau for why runStream gives no handle).
+-- The panel's onLine callback intercepts that sentinel line before it ever
+-- reaches these parsers, but both must independently reject it as
+-- unparseable too -- belt and suspenders, not a single point of failure.
+check("dmon sentinel line is not misread as data", parse.nvidia_dmon("NOCTALIA_PID:12345") == nil)
+
 local i = parse.intel_helper("1000176177|Frequency|191|Interrupts|872|Render|457711853|Copy|0|Video|0|Enhance|0")
 check("intel returns a table", type(i) == "table")
 check("intel timestamp parsed", i.timestamp == 1000176177)
 check("intel render counter parsed", i.render == 457711853)
 check("intel garbage returns nil", parse.intel_helper("nonsense") == nil)
 check("intel nil line returns nil", parse.intel_helper(nil) == nil)
+check("intel sentinel line is not misread as data", parse.intel_helper("NOCTALIA_PID:12345") == nil)
 
 local intel_fixture = read("intel_helper.txt")
 local intel_first_line = string.match(intel_fixture, "^([^\n]+)")
