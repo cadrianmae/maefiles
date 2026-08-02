@@ -27,6 +27,29 @@ leaves that row showing its last value until the panel is reopened, which is
 acceptable for a panel that is open for seconds at a time. Update the spec to
 match once implemented.
 
+## CORRECTIONS FROM TASK 1 — these override the task text below
+
+Task 1 discovered the upstream docs do not match noctalia 5.0.0. Where the
+task text below disagrees with this block, THIS BLOCK WINS:
+
+- Plugin manifest is `plugin.toml`, NOT `manifest.toml`.
+- Bar widgets are declared `[[widget]]`, NOT `[[bar_widget]]`. The wrong key
+  is accepted silently and yields zero entries - it does not error.
+- `plugin_api` must be in the range 3-16, not `1`. Use `16`.
+- A local plugin needs a REGISTERED SOURCE, not just a directory:
+  `noctalia msg plugins source add local path <dir>`, a `catalog.toml` index
+  at the source root, and a subdirectory named by the id's suffix only
+  (`sysmon/`, not `mae/sysmon/`).
+- Confirmed plugin directory:
+  `~/.local/state/noctalia/plugins/sources/local/sysmon/`
+- Entry id in settings.toml is `mae/sysmon:sysmon`.
+- `noctalia msg plugins list` shows load state; the journal shows
+  `loaded plugin 'mae/sysmon' (N entries)`. If N is 0 the manifest key is wrong.
+- The `[[panel]]` key used in Task 5 is UNVERIFIED and may be wrong in the
+  same way `[[bar_widget]]` was. Task 5 must confirm the real key from
+  `strings -a /usr/bin/noctalia` and the entry count in the journal before
+  assuming it works.
+
 ## Global Constraints
 
 - Plugin API functions available: `noctalia.readFile(path)`, `noctalia.runStream(cmd, onLine)`, `noctalia.runAsync(cmd, cb)`, `noctalia.setUpdateInterval(ms)`, `noctalia.commandExists(name)`, `noctalia.fileExists(path)`, `noctalia.getConfig(key)`, `noctalia.togglePanel(id)`, `noctalia.notify(title, body)`.
@@ -50,7 +73,7 @@ Plugin source lives where noctalia loads it, and is explicitly yadm-tracked (not
 
 | Path | Responsibility |
 |---|---|
-| `~/.local/state/noctalia/plugins/sources/local/mae/sysmon/manifest.toml` | Plugin metadata, declares the bar widget and panel entries |
+| `~/.local/state/noctalia/plugins/sources/local/sysmon/plugin.toml` | Plugin metadata, declares the bar widget and panel entries |
 | `.../sysmon/lib/parse.luau` | Pure string-to-value parsers. No I/O. Plain-Lua-compatible so `/usr/bin/lua` can test it. |
 | `.../sysmon/lib/thresholds.luau` | Threshold table and `level(metric, value)` returning `ok`/`activity`/`critical` |
 | `.../sysmon/widget.luau` | Bar entry: reads `/proc`, renders three pairs, click opens panel |
@@ -67,8 +90,8 @@ The split exists so parsing is testable without noctalia running. `parse.luau` t
 ### Task 1: Scaffold and prove the plugin loads
 
 **Files:**
-- Create: `<PLUGIN_DIR>/manifest.toml`
-- Create: `<PLUGIN_DIR>/widget.luau`
+- Create: `~/.local/state/noctalia/plugins/sources/local/sysmon/manifest.toml`
+- Create: `~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau`
 
 **Interfaces:**
 - Consumes: nothing.
@@ -124,7 +147,7 @@ If it does not, check `journalctl --user -u noctalia -n 50`.
 - [ ] **Step 5: Track it**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/manifest.toml <PLUGIN_DIR>/widget.luau .local/state/noctalia/settings.toml
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/manifest.toml ~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau .local/state/noctalia/settings.toml
 yadm commit -m "feat(sysmon): scaffold noctalia system monitor plugin"
 ```
 
@@ -133,7 +156,7 @@ yadm commit -m "feat(sysmon): scaffold noctalia system monitor plugin"
 ### Task 2: /proc parsers with tests
 
 **Files:**
-- Create: `<PLUGIN_DIR>/lib/parse.luau`
+- Create: `~/.local/state/noctalia/plugins/sources/local/sysmon/lib/parse.luau`
 - Create: `~/scripts/noctalia-sysmon/test_parse.lua`
 - Create: `~/scripts/noctalia-sysmon/fixtures/{meminfo,stat_a,stat_b,pressure_memory,pressure_cpu}.txt`
 
@@ -166,7 +189,7 @@ grep '^cpu ' /proc/stat > ~/scripts/noctalia-sysmon/fixtures/stat_b.txt
 -- parse.luau is written in the plain-Lua-compatible subset precisely so it
 -- can be exercised here, outside noctalia's Luau runtime.
 package.path = os.getenv("HOME") ..
-  "/.local/state/noctalia/plugins/sources/local/mae/sysmon/lib/?.luau;" .. package.path
+  "/.local/state/noctalia/plugins/sources/local/sysmon/lib/?.luau;" .. package.path
 local parse = require("parse")
 
 local pass, fail = 0, 0
@@ -224,7 +247,7 @@ Expected: FAIL, `module 'parse' not found`
 
 - [ ] **Step 4: Write the parser**
 
-`<PLUGIN_DIR>/lib/parse.luau`:
+`~/.local/state/noctalia/plugins/sources/local/sysmon/lib/parse.luau`:
 
 ```lua
 -- Pure parsers: string in, numbers out. No I/O, no globals.
@@ -299,7 +322,7 @@ Expected: `18 passed, 0 failed`, exit 0
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/lib/parse.luau scripts/noctalia-sysmon/
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/lib/parse.luau scripts/noctalia-sysmon/
 yadm commit -m "feat(sysmon): add /proc parsers with tests"
 ```
 
@@ -308,7 +331,7 @@ yadm commit -m "feat(sysmon): add /proc parsers with tests"
 ### Task 3: Threshold table
 
 **Files:**
-- Create: `<PLUGIN_DIR>/lib/thresholds.luau`
+- Create: `~/.local/state/noctalia/plugins/sources/local/sysmon/lib/thresholds.luau`
 - Modify: `~/scripts/noctalia-sysmon/test_parse.lua` (append a thresholds section)
 
 **Interfaces:**
@@ -354,7 +377,7 @@ Expected: FAIL, `module 'thresholds' not found`
 
 - [ ] **Step 3: Write the thresholds module**
 
-`<PLUGIN_DIR>/lib/thresholds.luau`:
+`~/.local/state/noctalia/plugins/sources/local/sysmon/lib/thresholds.luau`:
 
 ```lua
 -- Threshold table. The psi_mem_full pair is NOT free to change: it mirrors
@@ -408,7 +431,7 @@ Expected: `500` and `1000` (centi-percent), i.e. 5.00 and 10.00. If they differ,
 - [ ] **Step 6: Commit**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/lib/thresholds.luau scripts/noctalia-sysmon/test_parse.lua
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/lib/thresholds.luau scripts/noctalia-sysmon/test_parse.lua
 yadm commit -m "feat(sysmon): add threshold table matching memory-notify"
 ```
 
@@ -417,7 +440,7 @@ yadm commit -m "feat(sysmon): add threshold table matching memory-notify"
 ### Task 4: Bar widget
 
 **Files:**
-- Modify: `<PLUGIN_DIR>/widget.luau` (replace the Task 1 scaffold entirely)
+- Modify: `~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau` (replace the Task 1 scaffold entirely)
 
 **Interfaces:**
 - Consumes: `parse.meminfo`, `parse.cpu_jiffies`, `parse.cpu_percent`, `parse.pressure` from Task 2; `thresholds.level`, `thresholds.color` from Task 3.
@@ -532,7 +555,7 @@ Expected: `0.1/0.3/--`, never `0.1/0.3/0.0`.
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/widget.luau
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau
 yadm commit -m "feat(sysmon): render CPU, RAM and pressure in the bar"
 ```
 
@@ -541,8 +564,8 @@ yadm commit -m "feat(sysmon): render CPU, RAM and pressure in the bar"
 ### Task 5: Panel scaffold
 
 **Files:**
-- Modify: `<PLUGIN_DIR>/manifest.toml` (add the panel entry)
-- Create: `<PLUGIN_DIR>/panel.luau`
+- Modify: `~/.local/state/noctalia/plugins/sources/local/sysmon/manifest.toml` (add the panel entry)
+- Create: `~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau`
 
 **Interfaces:**
 - Consumes: `parse`, `thresholds`; `onClick` from Task 4 which calls `togglePanel("mae/sysmon:panel")`.
@@ -671,7 +694,7 @@ Click the bar widget. Expected: a panel showing CPU (temp only for now), RAM, SW
 - [ ] **Step 4: Commit**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/manifest.toml <PLUGIN_DIR>/panel.luau
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/manifest.toml ~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau
 yadm commit -m "feat(sysmon): add detail panel with memory and pressure rows"
 ```
 
@@ -680,7 +703,7 @@ yadm commit -m "feat(sysmon): add detail panel with memory and pressure rows"
 ### Task 6: GPU streams
 
 **Files:**
-- Modify: `<PLUGIN_DIR>/panel.luau`
+- Modify: `~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau`
 - Create: `~/scripts/noctalia-sysmon/fixtures/{nvidia_dmon,intel_helper}.txt`
 
 **Interfaces:**
@@ -873,7 +896,7 @@ Expected: `streams stopped`.
 - [ ] **Step 8: Commit**
 
 ```bash
-cd ~ && yadm add <PLUGIN_DIR>/panel.luau <PLUGIN_DIR>/lib/parse.luau scripts/noctalia-sysmon/
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau ~/.local/state/noctalia/plugins/sources/local/sysmon/lib/parse.luau scripts/noctalia-sysmon/
 yadm commit -m "feat(sysmon): add both GPUs via streamed counters"
 ```
 
@@ -882,7 +905,7 @@ yadm commit -m "feat(sysmon): add both GPUs via streamed counters"
 ### Task 7: Disk row
 
 **Files:**
-- Modify: `<PLUGIN_DIR>/panel.luau`
+- Modify: `~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau`
 
 **Interfaces:**
 - Consumes: `metric_row`, `build_rows`, `render` from Task 5.
@@ -975,7 +998,7 @@ Expected: the panel's DISK row matches `df -h /` output.
 
 ```bash
 lua ~/scripts/noctalia-sysmon/test_parse.lua
-cd ~ && yadm add <PLUGIN_DIR>/panel.luau <PLUGIN_DIR>/lib/parse.luau scripts/noctalia-sysmon/test_parse.lua
+cd ~ && yadm add ~/.local/state/noctalia/plugins/sources/local/sysmon/panel.luau ~/.local/state/noctalia/plugins/sources/local/sysmon/lib/parse.luau scripts/noctalia-sysmon/test_parse.lua
 yadm commit -m "feat(sysmon): add disk row"
 ```
 
@@ -984,7 +1007,7 @@ yadm commit -m "feat(sysmon): add disk row"
 ### Task 8: Degradation and final verification
 
 **Files:**
-- Modify: `<PLUGIN_DIR>/widget.luau` (tooltip)
+- Modify: `~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau` (tooltip)
 - Modify: `~/docs/specs/2026-08-02-noctalia-sysmon-widget-design.md` (status line)
 
 **Interfaces:**
@@ -1043,7 +1066,7 @@ error-handling row no longer applies. A spec that describes something other
 than the shipped code is worse than no spec.
 
 ```bash
-cd ~ && yadm add docs/specs/2026-08-02-noctalia-sysmon-widget-design.md <PLUGIN_DIR>/widget.luau
+cd ~ && yadm add docs/specs/2026-08-02-noctalia-sysmon-widget-design.md ~/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau
 yadm commit -m "feat(sysmon): add tooltip and mark spec implemented"
 ```
 
