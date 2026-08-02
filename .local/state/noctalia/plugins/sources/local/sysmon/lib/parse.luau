@@ -20,6 +20,14 @@ function parse.meminfo(text)
     elseif key == "SwapFree"     then out.swap_free  = tonumber(value)
     end
   end
+  -- mem_total == 0 only happens if MemTotal was never found (empty,
+  -- truncated, or not meminfo at all) -- a real machine cannot report a
+  -- zero MemTotal, so treat this as "unreadable" and return nil.
+  --
+  -- swap_total/swap_free == 0 do NOT gate this: a machine can legitimately
+  -- have no swap configured, and that is a real, healthy 0, not a parse
+  -- failure. Do not fold swap into this guard.
+  if out.mem_total == 0 then return nil end
   return out
 end
 
