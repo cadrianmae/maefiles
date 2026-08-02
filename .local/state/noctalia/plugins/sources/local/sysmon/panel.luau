@@ -312,6 +312,12 @@ local function build_rows()
       disk.used_pct .. "%",
       string.format("%.0f GB free", disk.avail / 1073741824),
       th.level("disk_pct", disk.used_pct)))
+  else
+    -- Every running system has a root filesystem, so unlike the GPU rows a
+    -- missing DISK reading always means something failed -- df absent, the
+    -- subprocess blocked, or the result not yet returned. Show it dimmed
+    -- rather than dropping the row, so the gap is visible instead of silent.
+    table.insert(rows, metric_row("database", "DISK", "--", "", "unknown"))
   end
 
   table.insert(rows, ui.label({ text = "PRESSURE", color = "on_surface", fontWeight = "bold" }))
