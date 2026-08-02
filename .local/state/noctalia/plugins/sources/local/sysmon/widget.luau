@@ -122,6 +122,16 @@ local function cpu_usage()
   local text = noctalia.readFile("/proc/stat")
   if not text then return nil end
   local total, idle = parse.cpu_jiffies(text)
+
+  -- The first tick after a restart has no previous sample, so a delta
+  -- against zero would report the whole-uptime average and read as a real
+  -- current figure. Seed the counters and report unreadable for one tick
+  -- rather than render a plausible lie.
+  if prev_total == 0 then
+    prev_total, prev_idle = total, idle
+    return nil
+  end
+
   local pct = parse.cpu_percent(prev_total, prev_idle, total, idle)
   prev_total, prev_idle = total, idle
   return pct
@@ -170,7 +180,22 @@ function update()
 
   local cpu_color = th.color(th.level("cpu_usage", cpu))
   local ram_color = th.color(th.level("ram_pct", ram))
-  local psi_color = th.color(th.level("psi_mem_full", psi_mem))
+
+  -- Only psi_mem_full has calibrated thresholds (they mirror memory-notify
+  -- and must not be extended casually to cpu/io pressure -- that would be a
+  -- design decision, not a bug fix). But the three PSI numbers share one
+  -- glyph+label, so if ANY of them is unreadable, dim the whole thing:
+  -- otherwise the shared colour could read "ok" while one of the three
+  -- values on screen is "--", which is a text/colour disagreement. A high
+  -- but readable cpu/io figure not colouring the element is acceptable --
+  -- the number is right there.
+  local psi_level
+  if psi_cpu == nil or psi_mem == nil or psi_io == nil then
+    psi_level = "unknown"
+  else
+    psi_level = th.level("psi_mem_full", psi_mem)
+  end
+  local psi_color = th.color(psi_level)
 
   barWidget.render(ui.row({ gap = 8, align = "center", onClick = "onClick" }, {
     ui.glyph({ name = "cpu", size = 14, color = cpu_color }),

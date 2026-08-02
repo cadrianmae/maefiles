@@ -66,6 +66,14 @@ check("identical samples give 0", parse.cpu_percent(100, 50, 100, 50) == 0)
 check("all-busy delta gives 100", parse.cpu_percent(0, 0, 100, 0) == 100)
 check("half-busy delta gives 50", parse.cpu_percent(0, 0, 100, 50) == 50)
 
+-- Pins the reasoning behind widget.luau's first-tick guard: a zero baseline
+-- is indistinguishable from a real "no previous sample" state to this
+-- function, so it happily returns the whole-uptime average as if it were a
+-- normal delta. The caller (cpu_usage() in widget.luau) must special-case
+-- prev_total == 0 and skip this call for one tick rather than trust it.
+check("cpu_percent from a zero baseline is the uptime average, not current",
+      parse.cpu_percent(0, 0, 1000, 900) == 10)
+
 local p = parse.pressure(read("pressure_memory.txt"))
 check("pressure returns a table", type(p) == "table")
 check("full_avg10 is a number", type(p.full_avg10) == "number")
