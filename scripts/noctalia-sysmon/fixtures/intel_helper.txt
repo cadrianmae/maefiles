@@ -1,0 +1,4 @@
+144318|Frequency|0|Interrupts|0|Render|0|Copy|0|Video|0|Enhance|0
+1000426301|Frequency|1|Interrupts|10|Render|5559839|Copy|0|Video|0|Enhance|0
+2000644764|Frequency|5|Interrupts|20|Render|11378263|Copy|0|Video|0|Enhance|0
+3000898404|Frequency|14|Interrupts|42|Render|28962518|Copy|0|Video|0|Enhance|0

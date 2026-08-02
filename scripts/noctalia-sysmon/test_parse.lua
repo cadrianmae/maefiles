@@ -138,6 +138,58 @@ check("unknown metric name stays ok",    th.level("nonsense", 999) == "ok")
 check("unknown maps to a dimmed token",  th.color("unknown") == "on_surface/0.4")
 check("unknown is not the same as ok",   th.color("unknown") ~= th.color("ok"))
 
+-- nvidia-smi dmon: two header lines start with '#'; data lines are
+-- whitespace-separated numbers. Real column order, captured on this machine
+-- into fixtures/nvidia_dmon.txt via `nvidia-smi dmon -d 2 -s pucm`, is:
+-- gpu pwr gtemp mtemp sm mem enc dec jpg ofa mclk pclk fb bar1 ccpm -- this
+-- matches the brief's assumed order exactly.
+check("dmon header returns nil", parse.nvidia_dmon("# gpu   pwr gtemp") == nil)
+check("dmon second header returns nil", parse.nvidia_dmon("# Idx      W      C") == nil)
+
+local n = parse.nvidia_dmon("    0    12    41     -    45     8     0     0")
+check("dmon data returns a table", type(n) == "table")
+check("dmon gives a numeric usage", type(n.usage) == "number")
+check("dmon gives a numeric temp", type(n.temp) == "number")
+
+-- mtemp is "-" (no dedicated memory-temp sensor) in real captures. A naive
+-- table.insert(fields, tonumber(tok)) silently skips that nil and shifts
+-- every later column left by one -- sm (usage) would read as 8 (mem) and
+-- mem_usage would read as 0 (enc). Pin literal values, not just their type,
+-- so that regression cannot creep back in.
+check("dmon temp is gtemp not shifted", n.temp == 41)
+check("dmon usage is sm not shifted", n.usage == 45)
+check("dmon mem_usage is mem not shifted", n.mem_usage == 8)
+
+local dmon_fixture = read("nvidia_dmon.txt")
+local dmon_data_line = string.match(dmon_fixture, "\n[^\n]*\n[^\n]*\n([^\n]+)")
+local n2 = parse.nvidia_dmon(dmon_data_line)
+check("dmon real fixture line parses", type(n2) == "table")
+check("dmon real fixture gives numeric temp", type(n2) == "table" and type(n2.temp) == "number")
+
+check("dmon garbage returns nil", parse.nvidia_dmon("not dmon data at all") == nil)
+check("dmon nil line returns nil", parse.nvidia_dmon(nil) == nil)
+
+local i = parse.intel_helper("1000176177|Frequency|191|Interrupts|872|Render|457711853|Copy|0|Video|0|Enhance|0")
+check("intel returns a table", type(i) == "table")
+check("intel timestamp parsed", i.timestamp == 1000176177)
+check("intel render counter parsed", i.render == 457711853)
+check("intel garbage returns nil", parse.intel_helper("nonsense") == nil)
+check("intel nil line returns nil", parse.intel_helper(nil) == nil)
+
+local intel_fixture = read("intel_helper.txt")
+local intel_first_line = string.match(intel_fixture, "^([^\n]+)")
+local i2 = parse.intel_helper(intel_first_line)
+check("intel real fixture line parses", type(i2) == "table" and type(i2.render) == "number")
+
+-- Counter deltas, not absolute values: the helper reports cumulative
+-- nanoseconds busy, exactly as KDE's LinuxIntelGpu computes it.
+check("intel percent from deltas",
+      parse.intel_percent(0, 0, 500000000, 1000000000) == 50)
+check("intel percent clamps at 100",
+      parse.intel_percent(0, 0, 2000000000, 1000000000) == 100)
+check("intel percent zero timedelta is 0",
+      parse.intel_percent(0, 0, 100, 0) == 0)
+
 -- Drift test: widget.luau inlines parse.luau and thresholds.luau verbatim
 -- (noctalia's Luau runtime has no require/load, see lib/parse.luau header).
 -- Without this check the inlined copy and the library file can diverge

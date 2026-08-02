@@ -71,6 +71,56 @@ function parse.pressure(text)
   if not found then return nil end
   return out
 end
+
+-- nvidia-smi dmon emits two header lines starting with '#', then data lines
+-- of whitespace-separated numbers. Real column order, captured on this
+-- machine into ~/scripts/noctalia-sysmon/fixtures/nvidia_dmon.txt via
+-- `nvidia-smi dmon -d 2 -s pucm`: gpu pwr gtemp mtemp sm mem enc dec jpg ofa
+-- mclk pclk fb bar1 ccpm.
+--
+-- mtemp is "-" on this machine (no dedicated memory-temp sensor), so
+-- tonumber("-") is nil for that column. table.insert(fields, tonumber(tok))
+-- would silently skip that nil and shift every later column left by one --
+-- sm (usage) would be read from mem's slot instead. Assign by explicit
+-- position (fields[count] = ...) so a hole stays a hole and later columns
+-- keep their real index.
+function parse.nvidia_dmon(line)
+  if not line or string.match(line, "^%s*#") then return nil end
+  local fields = {}
+  local count = 0
+  for tok in string.gmatch(line, "%S+") do
+    count = count + 1
+    fields[count] = tonumber(tok)
+  end
+  if count < 6 or not fields[3] or not fields[5] or not fields[6] then return nil end
+  return { temp = fields[3], usage = fields[5], mem_usage = fields[6] }
+end
+
+-- Pipe-delimited key/value pairs after a leading nanosecond timestamp, as
+-- emitted by /usr/libexec/ksystemstats_intel_helper (ships with ksystemstats,
+-- already carries cap_perfmon, needs no perf_event_paranoid change).
+function parse.intel_helper(line)
+  if not line then return nil end
+  local ts = string.match(line, "^(%d+)|")
+  if not ts then return nil end
+  local out = { timestamp = tonumber(ts) }
+  for key, value in string.gmatch(line, "|(%a+)|(%d+)") do
+    out[string.lower(key)] = tonumber(value)
+  end
+  if out.render == nil then return nil end
+  return out
+end
+
+-- Busy-nanoseconds delta over elapsed-nanoseconds delta, matching upstream
+-- LinuxIntelGpu: (value - lastUsage) * 100.0 / timediff.
+function parse.intel_percent(prev_render, prev_ts, render, ts)
+  local dt = ts - prev_ts
+  if dt <= 0 then return 0 end
+  local pct = math.floor(((render - prev_render) * 100) / dt + 0.5)
+  if pct < 0 then return 0 end
+  if pct > 100 then return 100 end
+  return pct
+end
 -- END INLINED parse.luau
 
 -- BEGIN INLINED thresholds.luau
@@ -109,6 +159,18 @@ end
 -- END INLINED thresholds.luau
 
 local th = thresholds
+
+-- GPU state lives only while the panel is open (see start_streams/
+-- stop_streams below) -- the panel is the only consumer of GPU data, so
+-- nothing runs in the background when it is shut. gpu.nvidia/gpu.intel stay
+-- nil until the first line arrives from each stream, and are wiped again on
+-- close so a reopened panel never shows a stale reading from before.
+local gpu = { nvidia = nil, intel = nil }
+local intel_prev = { render = nil, ts = nil }
+local streams = { nvidia = nil, intel = nil }
+
+local HELPER = "/usr/libexec/ksystemstats_intel_helper"
+local NVIDIA_CMD = "nvidia-smi dmon -d 2 -s pucm"
 
 local function pct_of(used, total)
   if total == 0 then return 0 end
@@ -153,6 +215,17 @@ local function build_rows()
     cpu_temp and (cpu_temp .. " C") or "--",
     "",
     th.level("cpu_temp", cpu_temp)))
+
+  if gpu.nvidia then
+    table.insert(rows, metric_row("device-desktop", "NVIDIA",
+      gpu.nvidia.usage .. "%",
+      gpu.nvidia.temp .. " C",
+      th.level("gpu_temp", gpu.nvidia.temp)))
+  end
+  if gpu.intel then
+    table.insert(rows, metric_row("device-desktop", "INTEL",
+      gpu.intel .. "%", "", "ok"))
+  end
 
   local meminfo = noctalia.readFile("/proc/meminfo")
   if meminfo then
@@ -219,5 +292,68 @@ local function render()
   }))
 end
 
-function onOpen() render() end
-function onClose() panel.close() end
+-- Streams live only while the panel is open. Neither GPU exposes utilisation
+-- in sysfs; this copies KDE's approach exactly (see NvidiaSmiProcess.cpp and
+-- the ksystemstats Intel helper upstream) rather than polling anything
+-- ourselves. The panel is the only consumer, so nothing runs when it is
+-- shut -- no timers, no background processes.
+--
+-- DEVIATION FROM THE ORIGINAL BRIEF, found empirically (live probe: a
+-- boolean, not a table, came back from runStream; logged via noctalia.log)
+-- and confirmed against docs.noctalia.dev/v5/plugins/development/runtime-api/:
+-- `noctalia.runStream(cmd, onLine)` returns a plain bool, not a handle --
+-- unlike httpStream(), it has no stop(). The docs state streams are only
+-- reaped "when the script reloads, the entry is removed, or Noctalia stops
+-- the plugin" -- none of which happen on a panel close. Calling the
+-- documented-nonexistent handle.stop() is exactly what threw
+-- "attempt to index boolean with 'stop'" the first time this ran live.
+-- The only way to actually stop these two specific processes from Lua is to
+-- kill them by their exact command line via a one-shot runAsync (pkill
+-- excludes its own invocation by default, so this cannot self-kill
+-- noctalia). Track "did we start it" as a bool, not a fictional handle.
+local function start_streams()
+  if noctalia.commandExists("nvidia-smi") and not streams.nvidia then
+    streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
+      local n = parse.nvidia_dmon(line)
+      if n then gpu.nvidia = n; render() end
+    end)
+  end
+
+  -- Ships with ksystemstats and already carries cap_perfmon, so no
+  -- system-wide perf_event_paranoid change is needed. Absent if KDE's
+  -- ksystemstats package is uninstalled, in which case the Intel row is
+  -- simply omitted (build_rows only adds it when gpu.intel is set).
+  if noctalia.fileExists(HELPER) and not streams.intel then
+    streams.intel = noctalia.runStream(HELPER, function(line)
+      local i = parse.intel_helper(line)
+      if not i then return end
+      -- First line has no prior sample to diff against -- seed the
+      -- baseline and skip rendering rather than showing a bogus 0%.
+      if intel_prev.ts then
+        gpu.intel = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
+        render()
+      end
+      intel_prev.render, intel_prev.ts = i.render, i.timestamp
+    end)
+  end
+end
+
+local function stop_streams()
+  if streams.nvidia then
+    noctalia.runAsync("pkill -f '" .. NVIDIA_CMD .. "'")
+    streams.nvidia = nil
+  end
+  if streams.intel then
+    noctalia.runAsync("pkill -f '" .. HELPER .. "'")
+    streams.intel = nil
+  end
+  intel_prev.render, intel_prev.ts = nil, nil
+  -- Wipe readings too, not just the handles: a reopened panel must show
+  -- "no data yet" rather than a stale figure from the stream that just
+  -- stopped, until fresh lines arrive.
+  gpu.nvidia, gpu.intel = nil, nil
+end
+
+function onOpen() start_streams(); render() end
+function onClose() stop_streams(); panel.close() end
+function onExit(signal, reason) stop_streams() end
