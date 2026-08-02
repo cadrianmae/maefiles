@@ -123,6 +123,15 @@ local function cpu_usage()
   if not text then return nil end
   local total, idle = parse.cpu_jiffies(text)
 
+  -- A readable but malformed /proc/stat yields (0,0). Rendering that as a
+  -- delta produces a confident "0%" -- the same plausible lie the
+  -- zero-baseline guard exists to prevent -- and writing it back would
+  -- re-arm that guard, costing a second spurious "--" tick afterwards.
+  -- Leave the previous baseline intact and report unreadable.
+  if total == 0 and idle == 0 then
+    return nil
+  end
+
   -- The first tick after a restart has no previous sample, so a delta
   -- against zero would report the whole-uptime average and read as a real
   -- current figure. Seed the counters and report unreadable for one tick

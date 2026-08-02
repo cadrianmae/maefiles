@@ -74,6 +74,14 @@ check("half-busy delta gives 50", parse.cpu_percent(0, 0, 100, 50) == 50)
 check("cpu_percent from a zero baseline is the uptime average, not current",
       parse.cpu_percent(0, 0, 1000, 900) == 10)
 
+-- Pins the reasoning behind widget.luau's (total==0 and idle==0) guard: a
+-- malformed-but-readable /proc/stat gives cpu_jiffies (0,0), and a negative
+-- delta against a real prior baseline is silently clamped to 0 here -- a
+-- confident "0%" that is just as much a lie as the zero-baseline case. The
+-- caller must reject a (0,0) current sample outright rather than trust it.
+check("cpu_percent with a zeroed current sample is not a real 0",
+      parse.cpu_percent(1000, 900, 0, 0) == 0)
+
 local p = parse.pressure(read("pressure_memory.txt"))
 check("pressure returns a table", type(p) == "table")
 check("full_avg10 is a number", type(p.full_avg10) == "number")
