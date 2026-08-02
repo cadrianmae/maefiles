@@ -182,9 +182,26 @@ local function build_rows()
   for _, kind in ipairs({ "cpu", "memory", "io" }) do
     local text = noctalia.readFile("/proc/pressure/" .. kind)
     local p = text and parse.pressure(text) or nil
-    local some = p and string.format("%.1f", p.some_avg60 or 0) or "--"
-    local full = p and p.full_avg60 and string.format("%.1f", p.full_avg60) or "--"
-    local level = (kind == "memory") and th.level("psi_mem_full", p and p.full_avg60) or "ok"
+    -- A non-nil p only proves at least one PSI line parsed; a specific
+    -- field can still be missing from a partially-parsed file. Guard the
+    -- field itself, not just the table, or a missing some_avg60 falls
+    -- through the "or 0" default and renders a confident, healthy "0.0".
+    local some = (p and p.some_avg60) and string.format("%.1f", p.some_avg60) or "--"
+    local full = (p and p.full_avg60) and string.format("%.1f", p.full_avg60) or "--"
+
+    -- cpu/io pressure are shown for information only -- they mirror no
+    -- calibrated threshold (only psi_mem_full does, matching memory-notify)
+    -- so they are never coloured as alarming. But an unreadable row MUST
+    -- still dim: a healthy colour beside "--" tells the user two
+    -- contradictory things at once.
+    local level
+    if not p then
+      level = "unknown"
+    elseif kind == "memory" then
+      level = th.level("psi_mem_full", p.full_avg60)
+    else
+      level = "ok"
+    end
     table.insert(rows, metric_row("activity", "  " .. kind,
       "some " .. some, "full " .. full, level))
   end
