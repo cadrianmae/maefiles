@@ -41,11 +41,10 @@ HOME = Path.home()
 # Values matching any of these are dropped from findings.
 # ---------------------------------------------------------------------------
 SAFE = [
-    # Git-hosting SSH URLs
-    r"^git@github\.com$",
-    r"^git@gitlab\.com$",
-    r"^git@bitbucket\.org$",
-    r"^git@bitbucket\.com$",
+    # Git-hosting SSH URLs. The "git@" local part is the conventional SSH
+    # user for git remotes (github, gitlab, codeberg, sr.ht, self-hosted),
+    # never a personal address, so allow any host.
+    r"^git@[A-Za-z0-9.-]+$",
     r"^[A-Za-z0-9._+-]+@users\.noreply\.github\.com$",
     r"^noreply@[A-Za-z0-9.-]+$",
     # Example / placeholder emails
