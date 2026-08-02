@@ -23,6 +23,7 @@ path=(
   "$GOPATH/bin"
   "$BUN_INSTALL/bin"
   "$HOME/.local/bin"
+  "$HOME/.claude/bin"
   "/usr/local/cuda-13.0/bin"
   "$HOME/bin"
   "$HOME/.local/share/JetBrains/Toolbox/apps/intellij-idea-ultimate/bin"

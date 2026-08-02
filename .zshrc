@@ -155,6 +155,18 @@ zstyle ':completion:*:*:okular:*' file-patterns '*.{pdf,md,txt,doc}:documents'
 
 alias odino-index='odino index . --model BAAI/bge-small-en-v1.5'
 
+# eza: modern ls with icons + git status. Aliases only bind if installed,
+# so this file stays portable to machines without it (coreutils ls remains).
+if (( $+commands[eza] )); then
+  _eza_base='--icons=auto --group-directories-first --git'
+  alias ls="eza ${_eza_base}"
+  alias ll="eza ${_eza_base} --long --header"
+  alias la="eza ${_eza_base} --long --header --all"
+  alias lt="eza ${_eza_base} --tree --level=2"
+  alias llt="eza ${_eza_base} --long --tree --level=2"
+  unset _eza_base
+fi
+
 # maefiles on-demand key model:
 #   Secrets live in `pass`, loaded explicitly via `env-key load <path>` or
 #   per-project via direnv `.envrc`. No auto-load here.

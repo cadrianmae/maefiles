@@ -17,3 +17,5 @@
 	helper = !/usr/bin/gh auth git-credential
 [commit]
 	template = /home/cadrianmae/.config/git/template/commit-template.txt
+[ghq]
+	root = /home/cadrianmae/git

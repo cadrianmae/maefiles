@@ -278,32 +278,64 @@ env-key() {
 }
 
 # ---------------------------------------------------------------------------
-# gclone - clone a repo into ./<owner>/<repo> based on its URL
-# Usage: gclone <url> [extra git-clone args...]
-#   gclone https://github.com/cadrianmae/aa-26     -> ./cadrianmae/aa-26
-#   gclone git@github.com:skooter500/boids.git     -> ./skooter500/boids
+# gclone - clone a repo into <ghq.root>/<host>/<owner>/<repo>, then cd there
+# Usage: gclone <url|owner/repo> [extra git-clone args...]
+#   gclone https://github.com/cadrianmae/aa-26  -> ~/git/github.com/cadrianmae/aa-26
+#   gclone git@codeberg.org:foo/bar.git         -> ~/git/codeberg.org/foo/bar
+#   gclone skooter500/boids                     -> ~/git/github.com/skooter500/boids
+#
+# Same layout as `ghq get`, but extra args pass through to git clone, which ghq
+# does not support (--depth, --branch, --recurse-submodules, ...).
 # ---------------------------------------------------------------------------
 gclone() {
+  emulate -L zsh
+
   local url="$1"
   if [[ -z "$url" ]]; then
-    echo "Usage: gclone <url> [git-clone-args...]"
+    echo "Usage: gclone <url|owner/repo> [git-clone-args...]" >&2
     return 1
   fi
+  local input="$url"  # kept for error messages; $1 is gone after the shift
   shift  # remaining args pass through to git clone
 
-  # Parse OWNER/REPO from the URL, covering both forms:
-  #   https://github.com/OWNER/REPO(.git)   and   git@github.com:OWNER/REPO(.git)
-  local owner repo
-  local stripped="${url%.git}"   # drop a trailing .git if present
-  repo="${stripped##*/}"          # last path segment
-  local rest="${stripped%/*}"     # everything before the repo
-  owner="${rest##*[:/]}"          # segment after the last ':' or '/'
+  local root="${$(git config --get ghq.root):-$HOME/git}"
+  root="${root/#\~/$HOME}"
 
-  if [[ -z "$owner" || -z "$repo" ]]; then
-    echo "gclone: could not parse owner/repo from '$url'" >&2
-    return 1
+  local stripped="${url%.git}"
+  stripped="${stripped%/}"
+
+  local host subpath
+  if [[ "$stripped" == *://* ]]; then          # https://host/subpath, ssh://git@host/subpath
+    local hostpath="${stripped#*://}"
+    hostpath="${hostpath#*@}"                  # drop any userinfo
+    host="${${hostpath%%/*}%%:*}"              # strip port
+    subpath="${hostpath#*/}"
+  elif [[ "$stripped" == *@*:* ]]; then        # scp-style git@host:subpath
+    local hostpath="${stripped#*@}"
+    host="${hostpath%%:*}"
+    subpath="${hostpath#*:}"
+    url="$stripped.git"                        # keep original form for git
+  else                                         # bare owner/repo shorthand
+    host="github.com"
+    subpath="$stripped"
+    url="https://$host/$subpath.git"
   fi
 
-  mkdir -p "$owner"
-  git clone "$@" -- "$url" "$owner/$repo"
+  # Owner is kept whole so GitLab subgroups (group/sub/repo) nest correctly.
+  if [[ "$subpath" != */* ]]; then
+    echo "gclone: could not parse owner/repo from '$input'" >&2
+    return 1
+  fi
+  local repo="${subpath##*/}" owner="${subpath%/*}"
+
+  local dest="$root/$host/$owner/$repo"
+  if [[ -d "$dest/.git" ]]; then
+    echo "gclone: already cloned, cd -> $dest"
+    cd "$dest"
+    return 0
+  fi
+
+  mkdir -p "${dest:h}" || return
+  git clone "$@" -- "$url" "$dest" || return
+  cd "$dest"
 }
