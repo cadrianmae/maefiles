@@ -122,5 +122,71 @@ check("unknown metric name stays ok",    th.level("nonsense", 999) == "ok")
 check("unknown maps to a dimmed token",  th.color("unknown") == "on_surface/0.4")
 check("unknown is not the same as ok",   th.color("unknown") ~= th.color("ok"))
 
+-- Drift test: widget.luau inlines parse.luau and thresholds.luau verbatim
+-- (noctalia's Luau runtime has no require/load, see lib/parse.luau header).
+-- Without this check the inlined copy and the library file can diverge
+-- silently -- the library keeps passing its own tests while the widget
+-- ships stale logic.
+local function read_whole(path)
+  local h, err = io.open(path)
+  if not h then error("missing file: " .. path .. " (" .. tostring(err) .. ")") end
+  local t = h:read("*a"); h:close(); return t
+end
+
+local function extract_between(text, begin_marker, end_marker)
+  local pattern = "%-%- BEGIN INLINED " .. begin_marker ..
+    "%.luau\n(.-)%-%- END INLINED " .. end_marker .. "%.luau"
+  local body = string.match(text, pattern)
+  if not body then error("markers not found for " .. begin_marker) end
+  return body
+end
+
+local function strip_trailing_return(text, name)
+  -- The inlined copy keeps "local X = {}" but drops the library's trailing
+  -- "return X" -- strip that line here so the comparison lines up.
+  local out = string.gsub(text, "\nreturn " .. name .. "%s*\n?$", "\n")
+  return out
+end
+
+local function trim_trailing_ws(text)
+  -- Trailing whitespace on lines and at EOF is cosmetic; strip per-line and
+  -- overall so formatting nits don't cause false drift failures.
+  local lines = {}
+  for line in (text .. "\n"):gmatch("([^\n]*)\n") do
+    table.insert(lines, (line:gsub("%s+$", "")))
+  end
+  while #lines > 0 and lines[#lines] == "" do
+    table.remove(lines)
+  end
+  return table.concat(lines, "\n")
+end
+
+local widget_path = os.getenv("HOME") ..
+  "/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau"
+local lib_dir = os.getenv("HOME") ..
+  "/.local/state/noctalia/plugins/sources/local/sysmon/lib/"
+local widget_text = read_whole(widget_path)
+
+local function strip_leading_comment(text, name)
+  -- The library file opens with an explanatory header comment that isn't
+  -- part of "the body" per the inlining spec (which keeps "local X = {}"
+  -- as the first line of the inlined copy) -- drop everything before it.
+  local from = string.find(text, "local " .. name .. " = {}", 1, true)
+  if not from then error("could not find 'local " .. name .. " = {}' in source") end
+  return string.sub(text, from)
+end
+
+local function check_drift(module_name)
+  local inlined = extract_between(widget_text, module_name, module_name)
+  local source = read_whole(lib_dir .. module_name .. ".luau")
+  source = strip_leading_comment(source, module_name)
+  source = strip_trailing_return(source, module_name)
+  check(module_name .. " inlined copy matches lib/" .. module_name .. ".luau",
+        trim_trailing_ws(inlined) == trim_trailing_ws(source))
+end
+
+check_drift("parse")
+check_drift("thresholds")
+
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
