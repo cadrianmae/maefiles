@@ -78,5 +78,31 @@ check("cpu pressure parses (no full line on some kernels)",
 check("garbage returns nil", parse.pressure("not pressure data") == nil)
 check("empty returns nil", parse.pressure("") == nil)
 
+local th = require("thresholds")
+
+check("cpu below activity is ok",        th.level("cpu_usage", 69) == "ok")
+check("cpu at activity is activity",     th.level("cpu_usage", 70) == "activity")
+check("cpu just below critical",         th.level("cpu_usage", 89) == "activity")
+check("cpu at critical",                 th.level("cpu_usage", 90) == "critical")
+check("ram at activity",                 th.level("ram_pct", 75) == "activity")
+check("ram at critical",                 th.level("ram_pct", 88) == "critical")
+check("swap activity is 50",             th.level("swap_pct", 50) == "activity")
+check("swap critical is 80",             th.level("swap_pct", 80) == "critical")
+check("disk critical is 92",             th.level("disk_pct", 92) == "critical")
+check("cpu temp critical is 90",         th.level("cpu_temp", 90) == "critical")
+check("gpu temp critical is 87",         th.level("gpu_temp", 87) == "critical")
+
+-- These two MUST match memory-notify's classify_tier or the bar and the
+-- notifier will disagree about when things are bad.
+check("psi mem activity is exactly 5",   th.level("psi_mem_full", 5.00) == "activity")
+check("psi mem below 5 is ok",           th.level("psi_mem_full", 4.99) == "ok")
+check("psi mem critical is exactly 10",  th.level("psi_mem_full", 10.00) == "critical")
+check("psi mem below 10 is activity",    th.level("psi_mem_full", 9.99) == "activity")
+
+check("unknown metric is ok",            th.level("nonsense", 999) == "ok")
+check("ok maps to on_surface",           th.color("ok") == "on_surface")
+check("activity maps to primary",        th.color("activity") == "primary")
+check("critical maps to error",          th.color("critical") == "error")
+
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
