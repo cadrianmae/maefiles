@@ -32,8 +32,7 @@ Gathered 2026-08-02.
 | # | Requirement |
 |---|---|
 | R1 | One widget, not several - "lump them into one" |
-| R2 | Same metrics as the KDE set, including PSI and temperatures |
-| R2a | NVMe drive temperatures are an ADDITION, not KDE parity - the KDE disk applet showed no temperature. Included because "also include temps" was asked for and hwmon makes them free to read. |
+| R2 | Same metrics as the KDE set, including PSI and CPU temperature |
 | R3 | Icons rather than text labels |
 | R4 | Bar shows CPU, RAM and PSI; everything else behind an interaction |
 | R5 | All three PSI values (cpu/mem/io) visible in the bar, compact |
@@ -43,7 +42,8 @@ Gathered 2026-08-02.
 ## Approach
 
 **A single custom Luau plugin.** Reads `/proc` and `/sys` directly for
-everything it can; one persistent `nvidia-smi` stream for GPU.
+everything it can; two persistent streams for the GPUs, both reusing the
+same mechanism KDE itself uses.
 
 ### Why not the built-in `sysmon` widget
 
@@ -89,29 +89,46 @@ The Nitro 5's dGPU cannot power off under Linux (no `_PR3` in firmware), so
 holding `nvidia-smi dmon` open costs no extra wakeups. On an Optimus laptop
 where the dGPU *can* sleep, this trade would need revisiting.
 
-### Known gap: the Intel iGPU
+### The Intel iGPU: reuse KDE's helper
 
-This machine has two GPUs and the KDE applet showed both (`gpu0/usage` and
-`gpu1/usage`). `nvidia-smi` covers only the NVIDIA card. The Intel iGPU
-(`card1`, i915) exposes no usage percentage in sysfs - only
-`gt_act_freq_mhz`, a clock frequency. Real i915 utilisation requires the perf
-interface via `intel_gpu_top`, which needs elevated `perf_event_paranoid` or
-`CAP_PERFMON`.
+This machine has two GPUs and the KDE applet showed both. `nvidia-smi` covers
+only the NVIDIA card. The Intel iGPU (`card1`, i915) exposes no usage
+percentage in sysfs - only `gt_act_freq_mhz`, a clock frequency.
 
-So this design covers ONE of the two GPUs, and does not fully meet R2. Three
-ways to close it, none free:
+KDE solves this with a small setcap'd helper, confirmed on this system:
 
-1. **Accept it.** Show the NVIDIA GPU only. The dGPU is the one that matters
-   for load and heat; the iGPU drives the display and rarely saturates.
-2. **Frequency as a proxy.** Show `gt_act_freq_mhz` scaled between
-   `gt_min_freq_mhz` and `gt_max_freq_mhz`. No permissions needed, but it is
-   not utilisation and will not match what KDE showed.
-3. **`intel_gpu_top -l -s 2000` as a second stream.** True utilisation,
-   matching KDE, but requires relaxing `perf_event_paranoid` system-wide -
-   a real security trade for a bar widget.
+```
+/usr/libexec/ksystemstats_intel_helper
+  cap_perfmon=ep                             file capability, 33 KB binary
+  reads /sys/bus/event_source/devices/i915   i915 perf event source
+```
 
-Option 1 is the default unless overridden. This is called out rather than
-silently dropped, since R2 asked for KDE parity.
+`LinuxIntelGpu.cpp` spawns it via `m_helperProcess->setProgram(helperLocation)`
+and parses pipe-delimited output. Verified by running it directly - it takes
+NO argument (passing a card name naively appends to the path, producing
+`i915card1`, which fails) and streams roughly once a second:
+
+```
+1000176177|Frequency|191|Interrupts|872|Render|457711853|Copy|0|Video|0|Enhance|0
+timestamp_ns |        |   |          |   |      counter  |
+```
+
+`Render` / `Video` are nanosecond counters. Usage percent is the counter delta
+over the timestamp delta, matching upstream: `(value - lastUsage) * 100.0 /
+timediff`.
+
+**This plugin reuses that helper via `runStream`.** It is already installed
+(shipped by `ksystemstats`, present because the KDE session is still
+installed) and already carries the capability, so there is NO system-wide
+`perf_event_paranoid` change and no new privileged binary. The capability
+stays scoped to one small program that KDE audits.
+
+Dependency risk: if `ksystemstats` is ever uninstalled the helper disappears.
+`commandExists` / `fileExists` is checked at startup and the Intel row is
+omitted if missing, exactly as with `nvidia-smi`.
+
+No separate Intel GPU temperature is collected: the iGPU is on-die, so
+`coretemp` already reflects it.
 
 ## Data sources
 
@@ -122,8 +139,8 @@ silently dropped, since R2 asked for KDE parity.
 | RAM % + used/total | `/proc/meminfo` | file read |
 | Swap % + used/total | `/proc/meminfo` | file read |
 | PSI cpu / mem / io | `/proc/pressure/{cpu,memory,io}` | file read |
-| NVMe temps | hwmon where `name=nvme` (two present) | file read |
-| GPU usage / temp / VRAM | `nvidia-smi dmon -d 2 -s pucm` via `runStream` | none - one process, lifetime |
+| NVIDIA usage / temp / VRAM | `nvidia-smi dmon -d 2 -s pucm` via `runStream` | none - one process, lifetime |
+| Intel iGPU usage | `/usr/libexec/ksystemstats_intel_helper` via `runStream` | none - one process, lifetime |
 | Disk free | `df` via `runAsync`, every 60 s | one fork per minute |
 
 Poll interval 2000 ms via `noctalia.setUpdateInterval`, matching `dmon -d 2`
@@ -172,14 +189,14 @@ Panel contents:
 ```
 +-----------------------------------------+
 |  (cpu)  CPU      12%        46 C        |
-|  (gpu)  GPU       3%        41 C        |
+|  (gpu)  NVIDIA    3%        41 C        |
 |  (vrm)  VRAM      8%    0.6 / 8.0 GB    |
+|  (igp)  INTEL     7%         - -        |
 |                                         |
 |  (ram)  RAM      58%    9.2 / 15.8 GB   |
 |  (swp)  SWAP     21%    3.5 / 16.0 GB   |
 |                                         |
 |  (dsk)  DISK     67%     412 GB free    |
-|  (tmp)  NVMe    30 C / 33 C             |
 |                                         |
 |  (act)  PRESSURE                        |
 |          cpu   some 0.1   full 0.0      |
@@ -221,7 +238,8 @@ freeze.
 
 | Failure | Behaviour |
 |---|---|
-| `nvidia-smi` absent | `commandExists` check at startup; GPU rows omitted from the panel, everything else works |
+| `nvidia-smi` absent | `commandExists` check at startup; NVIDIA rows omitted, everything else works |
+| Intel helper absent (ksystemstats removed) | `fileExists` check at startup; Intel row omitted, everything else works |
 | `nvidia-smi` stream dies | Show last known values greyed; attempt one restart per minute |
 | hwmon path stale after boot | Re-run discovery; if no `coretemp`, omit CPU temp rather than showing a wrong number |
 | `/proc/pressure/*` unreadable | Show `--` for PSI rather than `0.0`, which would read as "healthy" |
@@ -255,6 +273,10 @@ No bats equivalent exists for Luau plugins, so testing is split:
   right side is untouched.
 - Network and battery metrics - already covered by existing bar widgets.
 - Per-core CPU breakdown. KDE showed `cpu/all/usage` only.
+- **NVMe drive temperatures.** Available free from hwmon (`name=nvme`, two
+  drives, reading 30 C and 33 C on 2026-08-02) but deliberately deferred -
+  they were never part of the KDE set this replaces, and the panel is already
+  dense. Worth revisiting once the widget has been lived with.
 - Publishing to the noctalia community plugin registry.
 - Replacing `memory-notify`. This is the ambient half; the notifier remains
   the alarm. They share thresholds deliberately but stay independent.
