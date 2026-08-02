@@ -583,6 +583,14 @@ function onClose()
   -- rather than current load.
   cpu_prev_total, cpu_prev_idle = 0, 0
   cpu_pct = nil
+  -- Belt and braces, not load-bearing: PluginPanel::onClose in the host
+  -- (src/shell/panel/plugin_panel.cpp:228-230) calls m_tickTimer.stop()
+  -- unconditionally, before it even looks at m_wantsSecondTicks, so the 1s
+  -- tick already stops on close regardless of this call. Set it false here
+  -- anyway so the request is explicitly released rather than left dangling
+  -- until the next onOpen re-arms it -- symmetry with the true-on-open
+  -- above, and it costs nothing if the host's internals ever change.
+  panel.setWantsSecondTicks(false)
   panel.close()
 end
 function onExit(signal, reason) stop_streams() end
