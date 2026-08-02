@@ -169,11 +169,18 @@ local th = thresholds
 -- gpu_available is tracked separately from gpu: available means "this
 -- machine has the tool/binary and we started (or tried to start) its
 -- stream", data (gpu.nvidia/gpu.intel) means "a line has actually arrived".
--- A GPU can be available with no data yet (first tick) or after its stream
--- dies mid-session -- that must render as a dimmed "--" row, not vanish,
--- same as every other row in this panel. Absent (no nvidia-smi / no helper
--- binary) is the only case that omits the row entirely -- there is no such
--- GPU to report on.
+-- A GPU can be available with no data yet (before its first line arrives)
+-- -- that renders as a dimmed "--" row, not vanish, same as every other row
+-- in this panel. Absent (no nvidia-smi / no helper binary) is the only
+-- case that omits the row entirely -- there is no such GPU to report on.
+--
+-- HONEST LIMITATION, not a feature: there is no stream-death detection.
+-- runStream's onLine callback simply stops being called if the process
+-- dies mid-session (crash, killed externally, etc.) -- gpu.nvidia/gpu.intel
+-- keep their last value forever, the row does NOT dim or flag itself as
+-- stale, and stream_pids.X keeps pointing at a PID that no longer exists.
+-- The only way to clear a frozen reading is to close and reopen the panel,
+-- which wipes gpu.*/gpu_available and restarts both streams from scratch.
 local gpu = { nvidia = nil, intel = nil }
 local gpu_available = { nvidia = false, intel = false }
 local intel_prev = { render = nil, ts = nil }
@@ -358,6 +365,22 @@ end
 -- not the only guard). stop_streams then kills exactly that PID and
 -- nothing else, which also closes the reopen race a reviewer flagged: an
 -- exact `kill <pid>` can never touch a newly started stream's new PID.
+--
+-- Two further hardenings from a second review round, both in stop_streams:
+-- (1) if the sentinel line never arrives at all (helper died before the
+-- echo flushed, or before exec ran), stream_pids.X stays nil and there is
+-- no PID to target -- fall back to killing by exact WHOLE-command-line
+-- match (pkill -x -f) rather than silently leaking the process. This is a
+-- last resort reachable only when the primary PID capture failed, and is
+-- still narrower than the rejected `pkill -f`: -x requires the entire
+-- cmdline to equal the pattern, not merely contain it, so it cannot
+-- collateral-kill an unrelated command that happens to embed the same
+-- substring -- though it would still catch a user manually running the
+-- identical command, which is why it stays a fallback, not the default.
+-- (2) the primary PID kill sends SIGTERM first and escalates to SIGKILL
+-- two seconds later if the process is still alive -- neither helper is
+-- expected to ignore SIGTERM, but a stuck one would otherwise persist for
+-- the rest of the noctalia session with no further way to reach it.
 local function start_streams()
   if noctalia.commandExists("nvidia-smi") then
     gpu_available.nvidia = true
@@ -398,13 +421,30 @@ end
 
 local function stop_streams()
   if stream_pids.nvidia then
-    noctalia.runAsync("kill " .. stream_pids.nvidia)
-    stream_pids.nvidia = nil
+    -- SIGTERM first so the process can exit cleanly; escalate to SIGKILL
+    -- only if it is still alive two seconds later. See the long comment
+    -- above start_streams for why.
+    noctalia.runAsync("sh -c 'kill " .. stream_pids.nvidia ..
+      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.nvidia .. " 2>/dev/null' &")
+  elseif streams.nvidia then
+    -- The sentinel never arrived, so there is no PID to target. Fall back
+    -- to matching the process's whole command line exactly (-x -f), which
+    -- cannot substring-match an unrelated command line the way the
+    -- rejected `pkill -f` could. Still imperfect -- it would also match a
+    -- user-run nvidia-smi with the identical flags -- so it is a last
+    -- resort only reachable when the helper died before printing its PID.
+    noctalia.runAsync("pkill -x -f 'nvidia-smi dmon -d 2 -s pucm'")
   end
+  stream_pids.nvidia = nil
+
   if stream_pids.intel then
-    noctalia.runAsync("kill " .. stream_pids.intel)
-    stream_pids.intel = nil
+    noctalia.runAsync("sh -c 'kill " .. stream_pids.intel ..
+      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.intel .. " 2>/dev/null' &")
+  elseif streams.intel then
+    noctalia.runAsync("pkill -x -f '" .. HELPER .. "'")
   end
+  stream_pids.intel = nil
+
   streams.nvidia, streams.intel = nil, nil
   intel_prev.render, intel_prev.ts = nil, nil
   -- Wipe readings and availability, not just the pids: a reopened panel
