@@ -200,6 +200,35 @@ local intel_prev = { render = nil, ts = nil }
 local streams = { nvidia = nil, intel = nil }
 local stream_pids = { nvidia = nil, intel = nil }
 
+-- CPU usage is a delta and needs two /proc/stat samples separated in time;
+-- a single read gives cumulative-since-boot numbers, which render as a
+-- plausible but meaningless "uptime average" -- this is the exact bug
+-- widget.luau's cpu_usage() guards against (see its cpu_prev_total == 0
+-- check), and the same guard is replicated here.
+--
+-- Panels are event-driven (onOpen/render) by default, not ticked like the
+-- bar widget -- but a panel CAN opt into a fixed 1s tick timer by calling
+-- panel.setWantsSecondTicks(true) (see onOpen below), which then calls the
+-- panel's global update() once a second while it stays open. Confirmed two
+-- ways: (1) the shipped official/notes panel.luau calls exactly that and
+-- drives its idle-autosave timer from update(); (2) reading the host's own
+-- C++ source (plugin_panel.cpp: kTickIntervalMs = 1000, gated on
+-- m_wantsSecondTicks; plugin_bindings.cpp: panel.setWantsSecondTicks ->
+-- patch.wantsSecondTicks) -- cloned read-only from the noctalia-dev/noctalia
+-- GitHub repo for this task, since a live probe first showed update() firing
+-- exactly once (the runtime's one-time post-load bootstrap call, not a
+-- tick) with no repeat, which sent us to the source instead of guessing.
+-- noctalia.setUpdateInterval (what the bar widget calls) is the WRONG API
+-- for panels -- it only feeds patch.updateIntervalMs, which PluginPanel
+-- never reads at all; calling it here is silently a no-op.
+--
+-- update() is used rather than piggybacking on the GPU stream callbacks,
+-- which would make CPU usage silently depend on a GPU stream existing (no
+-- stream = row never populates on a machine with neither nvidia-smi nor
+-- the Intel helper).
+local cpu_prev_total, cpu_prev_idle = 0, 0
+local cpu_pct = nil -- nil until a valid delta exists; renders "--" dimmed
+
 -- Disk free has no /proc source; it needs statvfs, which the Luau API does
 -- not expose. See refresh_disk below (defined after render(), which its
 -- callback captures as a local upvalue).
@@ -256,9 +285,9 @@ local function build_rows()
 
   local cpu_temp = hwmon_temp("coretemp")
   table.insert(rows, metric_row("cpu", "CPU",
-    cpu_temp and (cpu_temp .. " C") or "--",
-    "",
-    th.level("cpu_temp", cpu_temp)))
+    cpu_pct and (cpu_pct .. "%") or "--",
+    cpu_temp and (cpu_temp .. " C") or "",
+    th.level("cpu_usage", cpu_pct)))
 
   -- Available-but-no-data-yet (or a stream that died mid-session) renders
   -- as a dimmed "--" row, same as every other unreadable sensor in this
@@ -498,6 +527,62 @@ local function stop_streams()
   gpu_available.nvidia, gpu_available.intel = false, false
 end
 
-function onOpen() start_streams(); refresh_disk(); render() end
-function onClose() stop_streams(); panel.close() end
+-- Ticked once a second while the panel is open, but ONLY once opted in via
+-- panel.setWantsSecondTicks(true) in onOpen below. noctalia.setUpdateInterval
+-- is the wrong API here -- that only wires up widgets/desktop-widgets/
+-- services (confirmed by reading the actual dispatch in plugin_panel.cpp:
+-- the panel tick timer is fixed at 1000ms and reacts only to
+-- patch.wantsSecondTicks, never to patch.updateIntervalMs). The runtime also
+-- calls update() once, unconditionally, right after the script's initial
+-- load -- that single bootstrap call is not a tick and must not be treated
+-- as one; it runs before setWantsSecondTicks(true) has even been requested.
+-- The official notes panel (panel.luau:359) does exactly this same
+-- setWantsSecondTicks(true) call for its own idle-autosave ticks -- that is
+-- what "shipped code" actually showed, not a self-declared interval inside
+-- update() the way the bar widget does it (widgets and panels are ticked by
+-- two different, unrelated mechanisms in the host).
+function update()
+  local text = noctalia.readFile("/proc/stat")
+  if not text then return end
+  local total, idle = parse.cpu_jiffies(text)
+
+  -- A readable but malformed /proc/stat yields (0,0). Rendering that as a
+  -- delta produces a confident "0%" -- reject it and leave the previous
+  -- baseline intact, exactly as widget.luau's cpu_usage() does.
+  if total == 0 and idle == 0 then return end
+
+  -- First tick (including the first tick after a reopen, since onClose
+  -- wipes the baseline below) has no previous sample -- seed it and wait
+  -- for the next tick rather than reporting a whole-uptime average.
+  if cpu_prev_total == 0 then
+    cpu_prev_total, cpu_prev_idle = total, idle
+    return
+  end
+
+  cpu_pct = parse.cpu_percent(cpu_prev_total, cpu_prev_idle, total, idle)
+  cpu_prev_total, cpu_prev_idle = total, idle
+  render()
+end
+
+function onOpen()
+  start_streams()
+  refresh_disk()
+  -- Opts this panel into the host's 1s tick timer so update() above keeps
+  -- firing while the panel stays open -- without this call update() runs
+  -- exactly once, at script load, and cpu_pct would never advance past its
+  -- seeded first-tick "--" state. See the long comment on update() for how
+  -- this was confirmed against the host's C++ source, not guessed.
+  panel.setWantsSecondTicks(true)
+  render()
+end
+function onClose()
+  stop_streams()
+  -- Wipe the baseline, not just stop ticking: a reopened panel must seed a
+  -- fresh sample rather than diff against a total from before the panel
+  -- was closed, which could span minutes and read as a stale average
+  -- rather than current load.
+  cpu_prev_total, cpu_prev_idle = 0, 0
+  cpu_pct = nil
+  panel.close()
+end
 function onExit(signal, reason) stop_streams() end

@@ -66,19 +66,22 @@ check("identical samples give 0", parse.cpu_percent(100, 50, 100, 50) == 0)
 check("all-busy delta gives 100", parse.cpu_percent(0, 0, 100, 0) == 100)
 check("half-busy delta gives 50", parse.cpu_percent(0, 0, 100, 50) == 50)
 
--- Pins the reasoning behind widget.luau's first-tick guard: a zero baseline
--- is indistinguishable from a real "no previous sample" state to this
--- function, so it happily returns the whole-uptime average as if it were a
--- normal delta. The caller (cpu_usage() in widget.luau) must special-case
--- prev_total == 0 and skip this call for one tick rather than trust it.
+-- Pins the reasoning behind widget.luau's and panel.luau's first-tick
+-- guard: a zero baseline is indistinguishable from a real "no previous
+-- sample" state to this function, so it happily returns the whole-uptime
+-- average as if it were a normal delta. Both callers (cpu_usage() in
+-- widget.luau, update() in panel.luau) must special-case prev_total == 0
+-- and skip this call for one tick rather than trust it.
 check("cpu_percent from a zero baseline is the uptime average, not current",
       parse.cpu_percent(0, 0, 1000, 900) == 10)
 
--- Pins the reasoning behind widget.luau's (total==0 and idle==0) guard: a
--- malformed-but-readable /proc/stat gives cpu_jiffies (0,0), and a negative
--- delta against a real prior baseline is silently clamped to 0 here -- a
--- confident "0%" that is just as much a lie as the zero-baseline case. The
--- caller must reject a (0,0) current sample outright rather than trust it.
+-- Pins the reasoning behind widget.luau's and panel.luau's
+-- (total==0 and idle==0) guard: a malformed-but-readable /proc/stat gives
+-- cpu_jiffies (0,0), and a negative delta against a real prior baseline is
+-- silently clamped to 0 here -- a confident "0%" that is just as much a
+-- lie as the zero-baseline case. Both callers must reject a (0,0) current
+-- sample outright and keep the previous baseline intact, not overwrite it
+-- with the malformed read.
 check("cpu_percent with a zeroed current sample is not a real 0",
       parse.cpu_percent(1000, 900, 0, 0) == 0)
 
