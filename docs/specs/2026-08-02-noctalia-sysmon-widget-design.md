@@ -1,7 +1,7 @@
 # noctalia: unified system monitor widget
 
 Date: 2026-08-02
-Status: Approved, not yet implemented
+Status: Implemented 2026-08-02
 Related: `2026-08-02-memory-notify-prefreeze-design.md` (shares the PSI thresholds)
 
 ## Problem
@@ -42,8 +42,10 @@ Gathered 2026-08-02.
 ## Approach
 
 **A single custom Luau plugin.** Reads `/proc` and `/sys` directly for
-everything it can; two persistent streams for the GPUs, both reusing the
-same mechanism KDE itself uses.
+everything it can; two streams for the GPUs, both reusing the same mechanism
+KDE itself uses. As built, these streams are **panel-scoped, not
+persistent** - see "Why GPU needs a subprocess" and the Data sources table
+below for the corrected lifetime.
 
 ### Why not the built-in `sysmon` widget
 
@@ -82,12 +84,24 @@ The QProcess is started once via `ref()` and kept alive, with
 fork per sample. This design mirrors it exactly.
 
 `noctalia.runStream(cmd, onLine)` provides the same shape: a long-lived shell
-command with a per-line callback, terminated automatically on reload, entry
-removal or plugin stop.
+command with a per-line callback.
+
+**Deviation from the original plan, found empirically:** `runStream` has no
+`stop()` - it returns a plain bool, not a handle, and the docs state streams
+are only reaped when the script reloads, the entry is removed, or the plugin
+stops, none of which happen on a panel close. Rather than hold the streams
+open for the plugin's entire lifetime (as originally planned here), the
+shipped implementation starts both GPU streams in `onOpen()` and kills them
+by exact PID in `onClose()`/`onExit()` (see `panel.luau` for the full PID-
+recovery mechanism). The panel is the only consumer of GPU data, so nothing
+runs in the background while it is closed - no idle `nvidia-smi dmon` or
+Intel helper process between panel opens.
 
 The Nitro 5's dGPU cannot power off under Linux (no `_PR3` in firmware), so
-holding `nvidia-smi dmon` open costs no extra wakeups. On an Optimus laptop
-where the dGPU *can* sleep, this trade would need revisiting.
+this panel-scoped design costs nothing extra either way on this machine - it
+was chosen for correctness (no leaked background process), not power. On an
+Optimus laptop where the dGPU *can* sleep, panel-scoping is the right call
+regardless.
 
 ### The Intel iGPU: reuse KDE's helper
 
@@ -139,8 +153,8 @@ No separate Intel GPU temperature is collected: the iGPU is on-die, so
 | RAM % + used/total | `/proc/meminfo` | file read |
 | Swap % + used/total | `/proc/meminfo` | file read |
 | PSI cpu / mem / io | `/proc/pressure/{cpu,memory,io}` | file read |
-| NVIDIA usage / temp / VRAM | `nvidia-smi dmon -d 2 -s pucm` via `runStream` | none - one process, lifetime |
-| Intel iGPU usage | `/usr/libexec/ksystemstats_intel_helper` via `runStream` | none - one process, lifetime |
+| NVIDIA usage / temp / VRAM | `nvidia-smi dmon -d 2 -s pucm` via `runStream` | one process, panel-scoped (started on open, killed on close) |
+| Intel iGPU usage | `/usr/libexec/ksystemstats_intel_helper` via `runStream` | one process, panel-scoped (started on open, killed on close) |
 | Disk free | `df` via `runAsync`, every 60 s | one fork per minute |
 
 Poll interval 2000 ms via `noctalia.setUpdateInterval`, matching `dmon -d 2`
@@ -181,8 +195,20 @@ Bar widgets cannot show a rich hover popup. The API offers `ui.button`'s
 `tooltip` (a plain string) and `noctalia.togglePanel()` for a separately
 declared panel. So:
 
-- **Hover** - one-line tooltip summary.
+- **Hover** - planned as a one-line tooltip summary; not shippable as
+  designed (see Task 8 finding below).
 - **Click** - panel with the full table.
+
+**Task 8 finding: the tooltip could not be added without a redesign.**
+`tooltip` is only accepted on `ui.button` (confirmed live: `ui.row` logs
+`'row' has no prop 'tooltip', ignored` and silently drops it), but
+`ui.button` cannot hold children (confirmed live: `'button' cannot have
+children, N dropped`) - it renders text/glyph only. The bar row's content is
+a multi-glyph, multi-coloured composite (CPU glyph+label, RAM glyph+label,
+PSI glyph+label), which does not fit inside a single button without
+discarding the existing visual design. Rather than force a redesign to gain
+a tooltip, the bar ships without one. Click-to-open-panel (the primary
+interaction) is unaffected.
 
 Panel contents:
 
@@ -240,7 +266,7 @@ freeze.
 |---|---|
 | `nvidia-smi` absent | `commandExists` check at startup; NVIDIA rows omitted, everything else works |
 | Intel helper absent (ksystemstats removed) | `fileExists` check at startup; Intel row omitted, everything else works |
-| `nvidia-smi` stream dies | Show last known values greyed; attempt one restart per minute |
+| `nvidia-smi`/Intel helper stream dies while panel is open | No restart is attempted - there is no background stream to restart. `runStream`'s `onLine` callback simply stops firing; the row freezes on its last value with no stale-data indicator. The only recovery is closing and reopening the panel, which wipes GPU state and starts both streams fresh. |
 | hwmon path stale after boot | Re-run discovery; if no `coretemp`, omit CPU temp rather than showing a wrong number |
 | `/proc/pressure/*` unreadable | Show `--` for PSI rather than `0.0`, which would read as "healthy" |
 | `df` fails | Keep last known disk figure, mark it stale |
@@ -280,3 +306,20 @@ No bats equivalent exists for Luau plugins, so testing is split:
 - Publishing to the noctalia community plugin registry.
 - Replacing `memory-notify`. This is the ambient half; the notifier remains
   the alarm. They share thresholds deliberately but stay independent.
+
+## Notes for future plugins
+
+Four places where upstream noctalia documentation was wrong or silent, each
+found empirically while building this plugin. Anyone writing another
+noctalia plugin will hit the same ones:
+
+- The manifest file is `plugin.toml`, not `manifest.toml`.
+- Bar widgets are declared with `[[widget]]` in the manifest, not
+  `[[bar_widget]]`. Using the wrong table key fails **silently** - the
+  plugin loads with zero bar entries and no error is logged.
+- `plugin_api` must be in the range 3-16.
+- Plugin entries run as isolated VMs: there is **no `require` and no
+  `load`**. Shared code cannot be imported across `widget.luau` and
+  `panel.luau` - it must be inlined into each entry that needs it (see the
+  `-- BEGIN/END INLINED` blocks at the top of both files here, kept in sync
+  with `lib/*.luau` by `test_parse.lua`).
