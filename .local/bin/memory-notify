@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# Pre-freeze memory warning. Runs as a systemd user service.
+#
+# Warns before the machine thrash-locks and the OOM killer starts taking
+# processes down, naming which application to close. Replaces a 60s timer
+# that alerted on RAM percent -- a value that sits at 90% permanently here and
+# so fired constantly while still being too slow to catch an actual ramp.
+#
+# See ~/docs/specs/2026-08-02-memory-notify-prefreeze-design.md
+
+set -euo pipefail
+
+# SC1091: the library path is only known at runtime via $HOME, so shellcheck
+# cannot follow it without -x; both files are confirmed to exist on disk.
+# shellcheck disable=SC1091
+source "$HOME/bin/lib/memory-notify/core.sh"
+# shellcheck disable=SC1091
+source "$HOME/bin/lib/memory-notify/notify.sh"
+
+# Overridable so the loop can be exercised end to end against bats fixtures
+# in test_loop.bats; production behaviour is unchanged since the defaults
+# are the real kernel paths.
+readonly MEMINFO="${MEMNOTIFY_MEMINFO:-/proc/meminfo}"
+readonly PRESSURE="${MEMNOTIFY_PRESSURE:-/proc/pressure/memory}"
+
+# Poll faster than the alert thresholds, so a transition is already being
+# sampled at 1-2s rather than discovered up to 10s late.
+readonly RATE_CALM=10
+readonly RATE_WATCH=2
+readonly RATE_DANGER=1
+readonly WATCH_HEADROOM=25
+readonly DANGER_HEADROOM=15
+
+readonly REFRESH_INTERVAL=5
+
+tier=ok
+watermark=999
+notif_id=0
+last_refresh=0
+pending_alert=""
+# Assumed available until a tick proves otherwise. Starting unavailable
+# (PRESSURE unreadable from the first tick) still logs, because the first
+# tick transitions 1 -> 0 below -- there is no separate startup-only check
+# to fall out of sync with the per-tick reality.
+psi_available=1
+
+log() { printf '[%s] %s\n' "$1" "$2"; }
+
+close_notification() {
+    (( notif_id > 0 )) || return 0
+    gdbus call --session \
+        --dest org.freedesktop.Notifications \
+        --object-path /org/freedesktop/Notifications \
+        --method org.freedesktop.Notifications.CloseNotification \
+        "$notif_id" >/dev/null 2>&1 || true
+    notif_id=0
+}
+
+while :; do
+    read -r memtotal memavail swaptotal swapfree < <(parse_meminfo "$MEMINFO") || true
+
+    # A transient parse failure must not change state or crash the service.
+    # `read` succeeds even on empty input, so validate the value rather than
+    # trusting the exit status.
+    if [[ ! "${memtotal:-0}" =~ ^[0-9]+$ ]] || (( memtotal == 0 )); then
+        log ERROR "could not parse $MEMINFO, skipping tick"
+        sleep "$RATE_CALM"
+        continue
+    fi
+
+    headroom=$(headroom_pct "$memtotal" "$memavail" "$swaptotal" "$swapfree")
+    psi=$(parse_psi_full_avg10 "$PRESSURE")
+
+    # A mid-run PSI failure (unmount, permission change, sysctl toggle) must
+    # not be silent -- classify_tier's headroom-only fallback is a deliberate
+    # accuracy trade the operator needs to know is active. Logged only on
+    # change, not every tick, so this does not reintroduce the log spam this
+    # tool exists to eliminate.
+    if (( psi < 0 )) && (( psi_available )); then
+        log WARN "PSI unavailable at $PRESSURE, degrading to headroom-only"
+        psi_available=0
+    elif (( psi >= 0 )) && (( ! psi_available )); then
+        log WARN "PSI available again at $PRESSURE"
+        psi_available=1
+    fi
+
+    # Symmetric with the meminfo read above: `decide` emitting nothing must
+    # not kill the service under set -e, and empty state must not be acted on.
+    read -r action new_tier new_watermark < <(decide "$tier" "$watermark" "$headroom" "$psi") || true
+
+    if [[ -z "${action:-}" ]]; then
+        log ERROR "decide produced no output, skipping tick"
+        sleep "$RATE_CALM"
+        continue
+    fi
+
+    tier="$new_tier"
+    watermark="$new_watermark"
+
+    # A failed send must not consume the transition: this service usually
+    # starts before the notification daemon, so the first alert of a session
+    # would otherwise be lost silently. But the retry must not outlive the
+    # episode that caused it -- only force a resend while the tier is still
+    # live. Without the tier check, a retry queued while critical would fire
+    # as a bogus alert against a since-recovered "ok" reading, telling the
+    # user to close applications on a healthy machine.
+    if [[ -n "$pending_alert" ]]; then
+        if [[ "$tier" != ok ]]; then
+            action="alert"
+        else
+            # The episode that queued this retry is over; abandon it rather
+            # than let it fire later against an unrelated (ok) reading.
+            pending_alert=""
+        fi
+    fi
+
+    case "$action" in
+        alert)
+            # A bare assignment here would kill the loop under set -e if awk
+            # can't be forked -- plausible on exactly the low-memory machine
+            # states this tool exists to warn about. A degraded notification
+            # with an unknown figure is still useful; a dead watchdog is not.
+            usable_gb=$(awk -v k=$(( memavail + swapfree )) \
+                'BEGIN { printf "%.1f", k / 1048576 }') || usable_gb="unknown"
+            body=$(render_body "$tier" "$headroom" "$psi" "$usable_gb")
+            new_id=$(send_notification "$tier" alert "$notif_id" "$body")
+            if [[ -n "$new_id" ]]; then
+                notif_id="$new_id"
+                pending_alert=""
+                last_refresh=$(date +%s)
+                log WARN "$tier headroom=${headroom}% psi=${psi}"
+            else
+                pending_alert=1
+                log ERROR "notify-send failed, will retry"
+            fi
+            ;;
+        refresh)
+            now=$(date +%s)
+            if (( now - last_refresh >= REFRESH_INTERVAL )); then
+                # See the alert branch above: tolerate a forking failure
+                # rather than let a dead awk kill the watchdog.
+                usable_gb=$(awk -v k=$(( memavail + swapfree )) \
+                    'BEGIN { printf "%.1f", k / 1048576 }') || usable_gb="unknown"
+                body=$(render_body "$tier" "$headroom" "$psi" "$usable_gb")
+                new_id=$(send_notification "$tier" refresh "$notif_id" "$body")
+                [[ -n "$new_id" ]] && notif_id="$new_id"
+                last_refresh="$now"
+            fi
+            ;;
+        recovered)
+            # Belt-and-braces alongside the tier gate above: a retry queued
+            # against a since-finished episode must be abandoned here too,
+            # not fired later -- the user must never be told to close
+            # applications because of a problem that already went away.
+            pending_alert=""
+            close_notification
+            log INFO "recovered headroom=${headroom}%"
+            ;;
+    esac
+
+    if   (( headroom <= DANGER_HEADROOM )); then sleep "$RATE_DANGER"
+    elif (( headroom <= WATCH_HEADROOM  )); then sleep "$RATE_WATCH"
+    else                                         sleep "$RATE_CALM"
+    fi
+done

@@ -29,3 +29,6 @@ bin/wokwi-cli
 
 # MkDocs build output
 .site/
+
+# Agent scratch: subagent-driven-development ledgers, briefs, reports
+.superpowers/

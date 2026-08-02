@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Stand-in for notify-send used by test_loop.bats. Behaviour is controlled by
+# the file at $NOTIFY_STUB_CONTROL ("ok" or "fail"), read fresh on every
+# invocation so a test can flip it mid-run. Every call (full argv) is appended
+# to $NOTIFY_STUB_LOG so tests can assert on what the loop tried to send,
+# independent of whether the send "succeeded".
+mode=$(cat "${NOTIFY_STUB_CONTROL:?NOTIFY_STUB_CONTROL not set}" 2>/dev/null || echo ok)
+
+{
+    printf 'CALL'
+    printf ' %q' "$@"
+    printf '\n'
+} >> "${NOTIFY_STUB_LOG:?NOTIFY_STUB_LOG not set}"
+
+if [[ "$mode" == "fail" ]]; then
+    exit 1
+fi
+
+# Incrementing rather than fixed, so a test can assert the loop passes the
+# PREVIOUS id back via --replace-id -- a fixed id would let a --replace-id
+# regression (e.g. always sending 0, or the newly-issued id) pass unnoticed.
+counter_file="${NOTIFY_STUB_LOG}.counter"
+next=$(( $(cat "$counter_file" 2>/dev/null || echo 0) + 1 ))
+echo "$next" > "$counter_file"
+echo "$next"
