@@ -9,3 +9,11 @@ description = "Unified system monitor: CPU, RAM, pressure, GPU, swap, disk"
 [[widget]]
 id    = "sysmon"
 entry = "widget.luau"
+
+[[panel]]
+id        = "panel"
+entry     = "panel.luau"
+width     = 380
+height    = 420
+placement = "floating"
+position  = "center"

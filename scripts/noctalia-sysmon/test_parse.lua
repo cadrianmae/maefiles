@@ -177,11 +177,18 @@ local function trim_trailing_ws(text)
   return table.concat(lines, "\n")
 end
 
-local widget_path = os.getenv("HOME") ..
-  "/.local/state/noctalia/plugins/sources/local/sysmon/widget.luau"
-local lib_dir = os.getenv("HOME") ..
-  "/.local/state/noctalia/plugins/sources/local/sysmon/lib/"
-local widget_text = read_whole(widget_path)
+local sysmon_dir = os.getenv("HOME") ..
+  "/.local/state/noctalia/plugins/sources/local/sysmon/"
+local lib_dir = sysmon_dir .. "lib/"
+
+-- Both entries inline parse.luau and thresholds.luau independently (no
+-- require/load in noctalia's Luau runtime, see lib/parse.luau header), so
+-- each one can drift from the library on its own -- checking only
+-- widget.luau would leave panel.luau free to go stale silently.
+local entries = {
+  widget = read_whole(sysmon_dir .. "widget.luau"),
+  panel  = read_whole(sysmon_dir .. "panel.luau"),
+}
 
 local function strip_leading_comment(text, name)
   -- The library file opens with an explanatory header comment that isn't
@@ -192,17 +199,19 @@ local function strip_leading_comment(text, name)
   return string.sub(text, from)
 end
 
-local function check_drift(module_name)
-  local inlined = extract_between(widget_text, module_name, module_name)
+local function check_drift(entry_name, entry_text, module_name)
+  local inlined = extract_between(entry_text, module_name, module_name)
   local source = read_whole(lib_dir .. module_name .. ".luau")
   source = strip_leading_comment(source, module_name)
   source = strip_trailing_return(source, module_name)
-  check(module_name .. " inlined copy matches lib/" .. module_name .. ".luau",
+  check(entry_name .. " inlined " .. module_name .. " matches lib/" .. module_name .. ".luau",
         trim_trailing_ws(inlined) == trim_trailing_ws(source))
 end
 
-check_drift("parse")
-check_drift("thresholds")
+for entry_name, entry_text in pairs(entries) do
+  check_drift(entry_name, entry_text, "parse")
+  check_drift(entry_name, entry_text, "thresholds")
+end
 
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
