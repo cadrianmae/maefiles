@@ -28,7 +28,7 @@ Spec: `~/docs/specs/2026-08-02-memory-notify-prefreeze-design.md`
 |---|---|
 | `~/bin/lib/memory-notify/core.sh` | Pure functions: parsing, tier classification, state machine. No I/O, no globals. |
 | `~/bin/lib/memory-notify/notify.sh` | Process naming, body rendering, `notify-send` wrapper. |
-| `~/.local/bin/memory-notify` | Main loop: reads `/proc`, calls core, calls notify, adaptive sleep. |
+| `~/bin/memory-notify` | Main loop: reads `/proc`, calls core, calls notify, adaptive sleep. |
 | `~/.config/systemd/user/memory-notify.service` | `Type=exec`, `Restart=always`, `WantedBy=graphical-session.target`. |
 | `~/scripts/memory-notify/test_core.bats` | Tests for `core.sh`. |
 | `~/scripts/memory-notify/test_notify.bats` | Tests for `notify.sh`. |
@@ -862,7 +862,7 @@ yadm commit -m "memory-notify: add notification rendering and send"
 ### Task 6: Main loop with adaptive rate
 
 **Files:**
-- Modify: `~/.local/bin/memory-notify` (full rewrite; the current prototype and
+- Modify: `~/bin/memory-notify` (full rewrite; the current prototype and
   its `.bak` remain untouched on disk)
 
 **Interfaces:**
@@ -876,7 +876,7 @@ not, which removes four state files and a whole class of staleness bugs.
 
 - [ ] **Step 1: Write the implementation**
 
-`~/.local/bin/memory-notify`:
+`~/bin/memory-notify`:
 
 ```bash
 #!/usr/bin/env bash
@@ -993,12 +993,12 @@ done
 
 - [ ] **Step 2: Lint**
 
-Run: `shellcheck ~/.local/bin/memory-notify`
+Run: `shellcheck ~/bin/memory-notify`
 Expected: no output
 
 - [ ] **Step 3: Smoke-test the loop by hand for 15 seconds**
 
-Run: `timeout 15 ~/.local/bin/memory-notify; echo "exit=$?"`
+Run: `timeout 15 ~/bin/memory-notify; echo "exit=$?"`
 Expected: exit 124 (timeout killed it), no error output, no notification on a
 healthy machine.
 
@@ -1011,7 +1011,7 @@ Expected: `0`
 
 ```bash
 cd ~
-yadm add .local/bin/memory-notify
+yadm add bin/memory-notify
 yadm commit -m "memory-notify: replace timer script with adaptive loop"
 ```
 
@@ -1024,7 +1024,7 @@ yadm commit -m "memory-notify: replace timer script with adaptive loop"
 - Delete: `~/.config/systemd/user/memory-notify.timer`
 
 **Interfaces:**
-- Consumes: `~/.local/bin/memory-notify` from Task 6.
+- Consumes: `~/bin/memory-notify` from Task 6.
 - Produces: a running service.
 
 - [ ] **Step 1: Replace the service unit**
@@ -1047,7 +1047,7 @@ StartLimitBurst=5
 
 [Service]
 Type=exec
-ExecStart=%h/.local/bin/memory-notify
+ExecStart=%h/bin/memory-notify
 
 # The loop should never exit; if it does, that is a bug worth recovering from.
 Restart=always
@@ -1105,7 +1105,7 @@ yadm commit -m "memory-notify: replace timer unit with long-running service"
 ### Task 8: Live verification and cleanup
 
 **Files:**
-- Delete: `~/.local/bin/memory-notify.bak`
+- Delete: `~/bin/memory-notify.bak`
 - Modify: `~/docs/specs/2026-08-02-memory-notify-prefreeze-design.md` (status line)
 
 **Interfaces:**
@@ -1147,7 +1147,7 @@ Expected: 1 or 2, not one per second. This is the entire point of the redesign.
 - [ ] **Step 6: Remove the old prototype backup**
 
 ```bash
-rm -f ~/.local/bin/memory-notify.bak
+rm -f ~/bin/memory-notify.bak
 ```
 
 - [ ] **Step 7: Mark the spec implemented**

@@ -13,7 +13,7 @@ StartLimitBurst=5
 
 [Service]
 Type=exec
-ExecStart=%h/.local/bin/memory-notify
+ExecStart=%h/bin/memory-notify
 
 # close_notification uses gdbus to dismiss the warning on recovery, so the
 # session bus address must be available in the unit's environment.

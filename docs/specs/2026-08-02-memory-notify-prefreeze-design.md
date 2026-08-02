@@ -75,7 +75,7 @@ Rejected alternatives:
 
 | Path | Role |
 |---|---|
-| `~/.local/bin/memory-notify` | Long-running bash loop: read, decide, notify |
+| `~/bin/memory-notify` | Long-running bash loop: read, decide, notify |
 | `~/bin/lib/memory-notify/core.sh` | Pure decision logic: parsing, tier classification, the `decide` state machine |
 | `~/bin/lib/memory-notify/notify.sh` | Notification rendering: body text, consumer naming, `notify-send` argument assembly |
 | `~/.config/systemd/user/memory-notify.service` | `Type=exec`, `Restart=always`, `Slice=session.slice` |

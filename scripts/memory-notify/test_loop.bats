@@ -6,7 +6,7 @@
 # place a bug in the loop's own glue code (as opposed to core.sh/notify.sh)
 # can be caught by a test rather than by inspection.
 
-SCRIPT="$HOME/.local/bin/memory-notify"
+SCRIPT="$HOME/bin/memory-notify"
 FIXTURES="$HOME/scripts/memory-notify/fixtures"
 STUB_SRC="$FIXTURES/notify-send-stub"
 
