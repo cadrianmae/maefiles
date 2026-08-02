@@ -5,7 +5,13 @@
 local wezterm = require 'wezterm'
 local config = wezterm.config_builder()
 
-config.color_scheme = 'Catppuccin Macchiato'
+config.color_scheme = "Noctalia"
+
+-- Slight translucency for a hint of frost, but opaque enough that the bright
+-- wallpaper doesn't bleed through and wash out text readability.
+-- Colours come from the Noctalia template (tracks the active Lumae-Dusk scheme).
+-- 1.0 = fully opaque (no frost); 0.85 = strong frost but washes out over light wallpaper.
+config.window_background_opacity = 0.90
 
 -- Font A/B trial — uncomment one. Reload with Ctrl+Shift+R.
 -- config.font = wezterm.font('IntoneMono Nerd Font Mono')            -- accessibility-tested, high x-height

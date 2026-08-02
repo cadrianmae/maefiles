@@ -1,0 +1,31 @@
+// Aero-glass overrides for niri — layered ON TOP of Noctalia's auto-generated
+// niri theme (noctalia.kdl, template-managed). Included LAST so these win.
+//
+// Base colours come from Noctalia (it tracks the active scheme via the "niri"
+// template). This file only adds the Aero-specific extras that the template
+// cannot: a gradient "glass edge" sheen on the focus ring, and the drop shadow.
+//
+// NOTE: the gradient hexes are hardcoded lumae Dusk — revisit if you switch flavor.
+// Spec: ~/docs/specs/2026-08-01-niri-lumae-dusk-aero-theme.md
+
+layout {
+    // Glass-edge SHEEN (Aero reflection emulation): a bright highlight at the top
+    // fading down into indigo — mimics light catching the top of a glass pane.
+    // angle=80 keeps the light near-horizontal at the top edge.
+    focus-ring {
+        width 2
+        active-gradient from="#ffdfe7" to="#5d5ab5" angle=80 relative-to="workspace-view"
+        inactive-color "#4e4949"
+        urgent-color   "#f09584"
+    }
+
+    // Soft Aero drop shadow. Noctalia's template only sets a shadow colour;
+    // this enables it and gives it Aero-ish softness/offset.
+    shadow {
+        on
+        softness 30
+        spread 5
+        offset x=0 y=5
+        color "#161212aa"
+    }
+}

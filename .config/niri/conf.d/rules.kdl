@@ -1,0 +1,69 @@
+// Window rules let you adjust behavior for individual windows.
+// Find more information on the wiki:
+// https://niri-wm.github.io/niri/Configuration:-Window-Rules
+
+// Work around WezTerm's initial configure bug
+// by setting an empty default-column-width.
+window-rule {
+    // This regular expression is intentionally made as specific as possible,
+    // since this is the default config, and we want no false positives.
+    // You can get away with just app-id="wezterm" if you want.
+    match app-id=r#"^org\.wezfurlong\.wezterm$"#
+    default-column-width {}
+
+    // Frosted-glass blur. REQUIRES wezterm to be semitransparent:
+    // set  window_background_opacity = 0.85  in ~/.config/wezterm/wezterm.lua
+    // (otherwise the opaque window fully covers the blur).
+    background-effect {
+        blur true
+    }
+}
+
+// Open the Firefox picture-in-picture player as floating by default.
+window-rule {
+    // This app-id regular expression will work for both:
+    // - host Firefox (app-id is "firefox")
+    // - Flatpak Firefox (app-id is "org.mozilla.firefox")
+    match app-id=r#"firefox$"# title="^Picture-in-Picture$"
+    open-floating true
+}
+
+// Example: block out two password managers from screen capture.
+// (This example rule is commented out with a "/-" in front.)
+/-window-rule {
+    match app-id=r#"^org\.keepassxc\.KeePassXC$"#
+    match app-id=r#"^org\.gnome\.World\.Secrets$"#
+
+    block-out-from "screen-capture"
+
+    // Use this instead if you want them visible on third-party screenshot tools.
+    // block-out-from "screencast"
+}
+
+// Rounded corners for all windows. Also makes blur clip to the rounded shape.
+window-rule {
+    geometry-corner-radius 12
+    clip-to-geometry true
+}
+
+// Noctalia's own windows (settings, etc.) open floating at a sensible size.
+// From the Noctalia niri docs.
+window-rule {
+    match app-id="dev.noctalia.Noctalia"
+    open-floating true
+    default-column-width { fixed 1080; }
+    default-window-height { fixed 920; }
+}
+
+// Frost Noctalia's layer-shell surfaces. The bar is semi-transparent
+// (transparency_mode="soft") but niri must be told to blur behind it —
+// the ext-background-effect protocol did not trigger on its own.
+layer-rule {
+    match namespace="^noctalia-bar-default$"
+    // Force the bar surface translucent so the blur shows — Noctalia's "glass"
+    // mode clamps it too opaque. Lower = more see-through/frost, higher = more solid.
+    opacity 0.80
+    background-effect {
+        blur true
+    }
+}

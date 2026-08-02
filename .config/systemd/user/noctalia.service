@@ -1,0 +1,32 @@
+[Unit]
+Description=Noctalia bar/shell for niri
+Documentation=https://docs.noctalia.dev
+
+# Bound to niri specifically, NOT to graphical-session.target, so this never
+# starts under Plasma or any other session. BindsTo means it also stops
+# cleanly when niri stops, rather than lingering as an orphan.
+BindsTo=niri.service
+After=niri.service
+
+# Give up after 5 restarts in 2 minutes. Without this a genuinely broken
+# binary would respawn forever instead of failing visibly.
+StartLimitIntervalSec=120
+StartLimitBurst=5
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/noctalia
+
+# The point of this unit: the OOM killer sends SIGKILL, which systemd counts
+# as a failure, so the bar comes back on its own instead of leaving an empty
+# screen. This mirrors how plasma-plasmashell.service survives being killed.
+Restart=on-failure
+RestartSec=2
+
+# session.slice keeps the bar out of app.slice, which is what systemd-oomd
+# targets under memory pressure.
+Slice=session.slice
+
+[Install]
+# Installs into niri.service.wants/ -- starts only when niri starts.
+WantedBy=niri.service
