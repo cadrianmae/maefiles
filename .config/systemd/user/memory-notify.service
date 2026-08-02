@@ -1,12 +1,30 @@
 [Unit]
-Description=RAM Usage Notification
-Documentation=man:free(1)
+Description=Pre-freeze memory warning
+Documentation=file://%h/docs/specs/2026-08-02-memory-notify-prefreeze-design.md
+
+# graphical-session.target rather than niri.service: unlike the bar, a memory
+# warning is not desktop-specific and should work under Plasma too. It needs
+# only a notification daemon.
+PartOf=graphical-session.target
+After=graphical-session.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
-Type=oneshot
+Type=exec
 ExecStart=%h/.local/bin/memory-notify
+
+# close_notification uses gdbus to dismiss the warning on recovery, so the
+# session bus address must be available in the unit's environment.
 Environment="DISPLAY=:0"
 Environment="DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%U/bus"
 
+# The loop should never exit; if it does, that is a bug worth recovering from.
+Restart=always
+RestartSec=5
+
+Slice=session.slice
+
 [Install]
-WantedBy=default.target
+WantedBy=graphical-session.target
