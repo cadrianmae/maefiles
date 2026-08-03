@@ -170,6 +170,69 @@ function thresholds.color(level)
 end
 -- END INLINED thresholds.luau
 
+-- BEGIN INLINED graph_history.luau
+local graph_history = {}
+
+-- Appends one entry every call. Callers must call this exactly once per
+-- tick for EVERY series they keep (never skip the call itself), passing
+-- nil for `v` on a tick with no reading -- an explicit invalid entry, not a
+-- missing one.
+function graph_history.push(history, v, max_len)
+  table.insert(history, { v = v, ok = v ~= nil })
+  if #history > max_len then table.remove(history, 1) end
+end
+
+-- Turns a push()-built history into the flat 0-1 number array ui.graph
+-- wants. Always exactly #history long when it returns anything at all, so
+-- two series built from histories of equal length stay equal length after
+-- flattening too.
+--
+--   1. Nothing valid anywhere in the window -> {} (empty). ui.graph draws
+--      no line for an empty series (the native sysmon widget's own
+--      clearGraph() calls setValues({}) for exactly this reason).
+--   2. The most recent `stale_ticks` entries are ALL invalid -> also {},
+--      even if older entries in the window were valid. This is the rule
+--      that matters most: without it, a dead stream's last real reading
+--      would sit frozen at the graph's right (= "now") edge forever,
+--      indistinguishable from a live current value -- the graph would
+--      keep vouching for a number nothing is updating anymore.
+--   3. Otherwise: interior gaps are filled by carrying the last valid
+--      value forward (bounded -- rule 2 already proves the tail is fresh
+--      whenever this branch runs, so a carried value can never reach the
+--      right edge and be mistaken for "now"). Any run before the
+--      first-ever valid entry (only possible in the first few ticks of a
+--      fresh series, e.g. right after this instance won the GPU stream
+--      election) is back-filled with that first valid value, so the
+--      returned array is always exactly #history long no matter where the
+--      gaps fall.
+function graph_history.flatten(history, stale_ticks)
+  local first_valid_v, last_valid_at = nil, nil
+  for i = 1, #history do
+    if history[i].ok then
+      if first_valid_v == nil then first_valid_v = history[i].v end
+      last_valid_at = i
+    end
+  end
+  if last_valid_at == nil then return {} end
+  if (#history - last_valid_at) >= stale_ticks then return {} end
+
+  local out = {}
+  local carry = nil
+  for i = 1, #history do
+    local e = history[i]
+    if e.ok then
+      carry = e.v
+      out[i] = e.v
+    elseif carry ~= nil then
+      out[i] = carry
+    else
+      out[i] = first_valid_v
+    end
+  end
+  return out
+end
+-- END INLINED graph_history.luau
+
 local th = thresholds
 
 local prev_total, prev_idle = 0, 0
@@ -190,12 +253,34 @@ local my_output = barWidget.outputName() or "unknown"
 -- long comment on update_ownership below for why this widget must arbitrate
 -- rather than simply "always start streams").
 local OWNER_KEY = "sysmon_gpu_owner"
+local HEARTBEAT_KEY = "sysmon_gpu_heartbeat"
 local NVIDIA_KEY = "sysmon_gpu_nvidia"
 local INTEL_KEY = "sysmon_gpu_intel"
 local AVAILABLE_KEY = "sysmon_gpu_available"
+local STALE_KEY = "sysmon_gpu_stale"
 
 local is_owner = false
 local owner_confirm_ticks = 0
+
+-- Owner-liveness heartbeat (see update_ownership below): the confirmed
+-- owner increments and republishes this every tick; every other instance
+-- watches it to detect a dead owner and reclaim. heartbeat_counter is this
+-- instance's own next value to publish (only meaningful while is_owner);
+-- last_seen_heartbeat/heartbeat_stale_ticks track a RECORDED owner's
+-- progress from this instance's point of view (only meaningful while NOT
+-- is_owner).
+local heartbeat_counter = 0
+local last_seen_heartbeat = nil
+local heartbeat_stale_ticks = 0
+-- ~10s at the widget's 2s tick. A genuinely alive new owner needs at most
+-- the 2-tick (~4s) confirm window below plus one more tick before its
+-- first heartbeat publish lands, so 5 consecutive unchanged ticks is
+-- already comfortably past that -- long enough that this cannot fire
+-- against an owner that is merely still electing, short enough that a
+-- truly dead owner (crashed, force-killed, or any other teardown path that
+-- skips onExit -- see the long comment on update_ownership) does not leave
+-- the graph and panel frozen for long.
+local HEARTBEAT_STALE_LIMIT = 5
 
 -- Local cache of the GPU figures, always sourced from noctalia.state (never
 -- written directly from this instance's own stream callbacks -- see
@@ -205,7 +290,43 @@ local owner_confirm_ticks = 0
 -- only one code path that updates these, not two that could drift apart.
 local gpu_nvidia = nil -- { temp, usage, mem_usage } or nil
 local gpu_intel = nil -- number (percent) or nil
-local gpu_available = { nvidia = false, intel = false }
+-- nil (not yet known, distinct from a real table with both fields false --
+-- see build_rows in panel.luau, which renders these three states
+-- differently: unknown -> dimmed placeholder rows for both possible GPUs,
+-- known-and-present -> a live row, known-absent -> the row omitted
+-- entirely) until the owner's first probe publishes a real table.
+local gpu_available = nil
+-- Per-GPU "is the most recent published value still fresh" flag, owner-
+-- computed (see nvidia_stale_ticks/intel_stale_ticks below) and read by
+-- every instance the same way as gpu_nvidia/gpu_intel/gpu_available.
+-- Defaults to not-stale: this is only ever consulted alongside a non-nil
+-- gpu_nvidia/gpu_intel check (see higher_gpu_pct), so before any reading
+-- has ever arrived it is moot -- gpu_nvidia/gpu_intel being nil already
+-- makes higher_gpu_pct() report "no data" regardless of this flag's
+-- pre-publish default.
+local gpu_stale = { nvidia = false, intel = false }
+
+-- Ticks since the last successfully parsed stream line for each GPU,
+-- counted only while this instance is the confirmed owner (only the owner
+-- ever receives raw stream lines to reset these -- see the onLine
+-- callbacks in start_streams). Feeds STALE_KEY, published once per owner
+-- tick in update() below, so every consumer (this instance's own graph,
+-- the other monitor's widget, and the panel -- which stops ticking while
+-- closed, so it cannot reliably keep its own "ticks since" count across a
+-- long close) can tell a frozen last-known reading from a live one without
+-- needing its own continuously-running clock.
+local nvidia_stale_ticks = 0
+local intel_stale_ticks = 0
+-- Same cadence reasoning as HISTORY_LEN/graph_history.flatten below: both
+-- streams' own polling interval and the widget's tick are ~2s, so 3
+-- consecutive misses (~6s) is already 3x the expected inter-arrival gap --
+-- enough margin that one dropped or unparseable line does not flag the
+-- whole reading stale, tight enough that a genuinely dead stream stops
+-- being shown as current within about 6 seconds. Reused, not duplicated,
+-- for the graph's own tail-blank check (graph_history.flatten) below --
+-- one definition of "how old is too old" for GPU data, not two that could
+-- disagree.
+local STALE_TICKS = 3
 
 local intel_prev = { render = nil, ts = nil }
 local streams = { nvidia = nil, intel = nil }
@@ -226,15 +347,18 @@ local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 -- trend, enough to read a spike-and-recover shape at a glance without the
 -- bar element dominating the row (matches the glyph-sized RAM/PSI elements
 -- it sits beside).
+--
+-- Both histories are pushed exactly once per tick, unconditionally, in
+-- lockstep, via graph_history.push -- see that function's comment (in the
+-- INLINED graph_history.luau block above) for why: skipping a push on an
+-- invalid tick lets the two series drift to different lengths, which
+-- ui.graph then stretches across the same width independently, breaking
+-- the index correspondence between "n ticks ago" in one series and the
+-- other.
 local HISTORY_LEN = 40
 local GRAPH_WIDTH, GRAPH_HEIGHT = 40, 16
 local cpu_history = {}
 local gpu_history = {}
-
-local function push_history(t, v)
-  table.insert(t, v)
-  if #t > HISTORY_LEN then table.remove(t, 1) end
-end
 
 -- ui.graph wants 0-1; a momentarily bogus sensor read (or simple rounding at
 -- the 100% boundary) above 100 or below 0 must not corrupt the graph's
@@ -255,7 +379,14 @@ end
 -- perfectly good reading already exists in state.
 gpu_nvidia = noctalia.state.get(NVIDIA_KEY)
 gpu_intel = noctalia.state.get(INTEL_KEY)
-gpu_available = noctalia.state.get(AVAILABLE_KEY) or { nvidia = false, intel = false }
+-- No `or {...}` fallback here (unlike an earlier version of this file):
+-- gpu_available staying nil until the owner's first real probe IS the
+-- "not yet known" state panel.luau's build_rows now renders as dimmed
+-- placeholder rows rather than omitting them outright -- see the long
+-- comment on the `local gpu_available` declaration above for the three
+-- states this distinguishes.
+gpu_available = noctalia.state.get(AVAILABLE_KEY)
+gpu_stale = noctalia.state.get(STALE_KEY) or { nvidia = false, intel = false }
 
 noctalia.state.watch(NVIDIA_KEY, function(v)
   gpu_nvidia = v
@@ -266,20 +397,30 @@ noctalia.state.watch(INTEL_KEY, function(v)
   render()
 end)
 noctalia.state.watch(AVAILABLE_KEY, function(v)
-  gpu_available = v or { nvidia = false, intel = false }
+  gpu_available = v
+  render()
+end)
+noctalia.state.watch(STALE_KEY, function(v)
+  gpu_stale = v or { nvidia = false, intel = false }
   render()
 end)
 
--- The higher of the two GPUs' usage. ui.graph only accepts two series from
--- Lua (values/values2 -- the C++ Graph class does have setValues3/setColor3,
--- but the prop whitelist in ui_tree_reconciler.cpp omits values3/color3, so
--- a third series is not reachable from a plugin at all). With CPU already
--- taking one series, both GPUs must share the other; the panel keeps
--- showing them as separate labelled rows, since it has room and the bar
--- does not.
+-- The higher of the two GPUs' usage, or nil if a GPU has never reported or
+-- its most recent report has gone stale (see gpu_stale/STALE_TICKS above).
+-- A stale reading must not feed the graph as if it were current -- that is
+-- exactly the "frozen number looks live" failure this task exists to close
+-- -- so it is excluded here, upstream of graph_history.push in update()
+-- below, rather than trying to special-case it later.
+--
+-- ui.graph only accepts two series from Lua (values/values2 -- the C++
+-- Graph class does have setValues3/setColor3, but the prop whitelist in
+-- ui_tree_reconciler.cpp omits values3/color3, so a third series is not
+-- reachable from a plugin at all). With CPU already taking one series,
+-- both GPUs must share the other; the panel keeps showing them as separate
+-- labelled rows, since it has room and the bar does not.
 local function higher_gpu_pct()
-  local n = gpu_nvidia and gpu_nvidia.usage or nil
-  local i = gpu_intel
+  local n = (gpu_nvidia and not gpu_stale.nvidia) and gpu_nvidia.usage or nil
+  local i = (not gpu_stale.intel) and gpu_intel or nil
   if n and i then return math.max(n, i) end
   return n or i
 end
@@ -297,50 +438,112 @@ end
 -- individually atomic (mutex-protected in the host's PluginStateStore), but
 -- the pair is not atomic across two independent widget instances. A plain
 -- "if get() == nil then set(self)" can let both instances see nil and both
--- claim, each then seeing ITSELF on an immediate reread purely because of
--- how the two instances' get/set calls happened to interleave -- reread
--- alone cannot fully close this, since a widget's own reread only proves
--- what was true at that instant, not that a rival's write won't land right
--- after.
+-- try to claim -- ownership here is instead a claim that must be OBSERVED TO
+-- HOLD across two consecutive ticks (owner_confirm_ticks below) before
+-- streams actually start. This function runs once per 2s widget tick (see
+-- update() below).
 --
--- Rather than accept that (or invent a fake CAS this host doesn't provide),
--- ownership here is a claim that must be OBSERVED TO HOLD across two
--- consecutive ticks before streams actually start. This function runs once
--- per 2s widget tick (see update() below). Any tick where the recorded
--- owner is a different output demotes immediately, stopping this instance's
--- streams if it had any running. Because every instance re-derives its
--- belief from a fresh state.get() every single tick, whichever output's
--- write is temporally LAST once no one else is writing is the only one that
--- can observe itself as owner on two ticks running -- a loser's own next
--- get() will see the winner's name, not its own, and demote.
+-- CORRECTNESS NOTE (this took a live back-and-forth with review to pin
+-- down precisely, so it is spelled out in full rather than summarised): an
+-- earlier draft of this comment claimed a double-start was possible for
+-- "up to one extra tick" if both monitors' widgets loaded in the same
+-- tick. Re-reading the actual code below shows that claim was wrong --
+-- OWNER_KEY is written from exactly two places: the `current == nil`
+-- branch (a fresh claim) and the heartbeat-reclaim branch further down,
+-- and NEITHER of those branches ever touches is_owner or calls
+-- start_streams. is_owner only ever flips true inside the
+-- `current == my_output` branch, and only after owner_confirm_ticks (reset
+-- to 0 by every OTHER branch) reaches 2 on CONSECUTIVE calls to THIS
+-- instance's own update_ownership. Since noctalia.state.get(OWNER_KEY)
+-- always returns one consistent value at a time, at most one output name
+-- can ever be "current" on any given tick -- so at most one instance can
+-- ever be incrementing owner_confirm_ticks toward 2 at once; the other
+-- necessarily observes a different name and resets to 0 instead. Two
+-- instances calling start_streams() is therefore not reachable at all, not
+-- merely rare -- confirmed by re-tracing every write site, not just
+-- accepting review's correction on faith. The same argument applies to the
+-- heartbeat-reclaim path below: a reclaim is just another `state.set` of
+-- OWNER_KEY, gated by the identical 2-tick confirm before anything starts.
 --
--- This bounds the worst case rather than eliminating it: if both monitors'
--- widgets load in the very same tick, both MAY start streams for up to one
--- extra tick (~2s) before the loser demotes -- documented, not hidden.
--- Verified empirically after a full noctalia restart that steady state (a
--- few ticks in) always settles to exactly one nvidia-smi dmon and one
--- ksystemstats_intel_helper -- see the task report for the pgrep output.
+-- What IS real, and is what heartbeat/reclaim below actually fixes: once
+-- OWNER_KEY is non-nil, nothing ever set it back to nil except the owner's
+-- own onExit. If the owning runtime is torn down by a path onExit does not
+-- cover (unverified whether the host guarantees onExit on every teardown --
+-- a crash or an external kill -9 of the whole noctalia process are the
+-- obvious candidates), OWNER_KEY stays pointing at a dead output forever,
+-- and no instance could ever claim it again without the heartbeat check
+-- below.
 local start_streams, stop_streams, probe_gpu_availability
 
 local function update_ownership()
   local current = noctalia.state.get(OWNER_KEY)
-  if current == nil then
-    noctalia.state.set(OWNER_KEY, my_output)
-    owner_confirm_ticks = 0
-    return
-  end
+
   if current == my_output then
+    -- I am the recorded owner (freshly claimed, freshly reclaimed, or
+    -- already confirmed) -- see the 2-tick confirm gate below for why
+    -- start_streams() is not called on the very tick this branch is first
+    -- reached.
     owner_confirm_ticks = owner_confirm_ticks + 1
     if owner_confirm_ticks >= 2 and not is_owner then
       is_owner = true
       start_streams()
     end
-  else
-    owner_confirm_ticks = 0
+    -- Only the confirmed owner publishes a heartbeat -- see the constant's
+    -- comment above for the ~10s reclaim threshold this feeds on every
+    -- OTHER instance.
     if is_owner then
-      is_owner = false
-      stop_streams()
+      heartbeat_counter = heartbeat_counter + 1
+      noctalia.state.set(HEARTBEAT_KEY, heartbeat_counter)
     end
+    -- I cannot be watching myself go stale.
+    heartbeat_stale_ticks = 0
+    last_seen_heartbeat = nil
+    return
+  end
+
+  if current == nil then
+    -- Nobody is recorded as owner -- either the very first tick anywhere,
+    -- or the previous owner released the claim cleanly in its own onExit.
+    -- Streams do not start on this same tick; see the 2-tick confirm above.
+    noctalia.state.set(OWNER_KEY, my_output)
+    owner_confirm_ticks = 0
+    heartbeat_stale_ticks = 0
+    last_seen_heartbeat = nil
+    return
+  end
+
+  -- Someone else is recorded as owner. Demote if I previously held it.
+  owner_confirm_ticks = 0
+  if is_owner then
+    is_owner = false
+    stop_streams()
+  end
+
+  -- Heartbeat reclaim -- the gap described above, and ONLY that gap: onExit
+  -- already releases OWNER_KEY cleanly on every exit path the host is
+  -- confirmed to call it on (script reload, plugin entry removed, ordinary
+  -- shutdown -- see this file's onExit). If the recorded owner's heartbeat
+  -- has not advanced for HEARTBEAT_STALE_LIMIT consecutive ticks -- which
+  -- also covers the case where it never published one at all, since `hb ==
+  -- last_seen_heartbeat` is true when both are nil -- treat it as dead and
+  -- reclaim by writing my own name over it. That reclaim then falls through
+  -- the exact same `current == my_output` branch and 2-tick confirm as any
+  -- fresh claim on the next tick, which is what keeps a reclaim from racing
+  -- a merely-slow-to-publish (but actually still alive) owner into a double
+  -- start -- see the CORRECTNESS NOTE above; the same argument applies here
+  -- unchanged.
+  local hb = noctalia.state.get(HEARTBEAT_KEY)
+  if hb == last_seen_heartbeat then
+    heartbeat_stale_ticks = heartbeat_stale_ticks + 1
+  else
+    heartbeat_stale_ticks = 0
+  end
+  last_seen_heartbeat = hb
+
+  if heartbeat_stale_ticks >= HEARTBEAT_STALE_LIMIT then
+    noctalia.state.set(OWNER_KEY, my_output)
+    heartbeat_stale_ticks = 0
+    last_seen_heartbeat = nil
   end
 end
 
@@ -361,12 +564,19 @@ end
 start_streams = function()
   probe_gpu_availability()
 
+  -- nvidia_stale_ticks/intel_stale_ticks reset to 0 right where each stream
+  -- actually publishes a fresh value -- update() below increments them
+  -- every owner tick and publishes the derived STALE_KEY, so a reset here
+  -- is what keeps a live stream from ever being reported stale.
   if gpu_available.nvidia and not streams.nvidia then
     streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
       local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
       if pid then stream_pids.nvidia = pid; return end
       local n = parse.nvidia_dmon(line)
-      if n then noctalia.state.set(NVIDIA_KEY, n) end
+      if n then
+        nvidia_stale_ticks = 0
+        noctalia.state.set(NVIDIA_KEY, n)
+      end
     end)
   end
 
@@ -385,6 +595,7 @@ start_streams = function()
       -- baseline and skip publishing rather than a bogus 0%.
       if intel_prev.ts then
         local pct = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
+        intel_stale_ticks = 0
         noctalia.state.set(INTEL_KEY, pct)
       end
       intel_prev.render, intel_prev.ts = i.render, i.timestamp
@@ -535,11 +746,22 @@ function render()
     -- always "critical" (thresholds.color's "error"/red role) rather than
     -- just being a different series. RAM and PSI keep using thresholds.color
     -- exactly as before -- they are unchanged by this task.
+    --
+    -- graph_history.flatten (not the raw history tables) is what actually
+    -- goes to ui.graph -- see that function's comment for the full rules,
+    -- summarised: nothing valid anywhere -> {} (no line at all), the tail
+    -- gone stale -> also {} (never leave a frozen "now" on screen), else a
+    -- same-length array with short gaps carried forward. Both series are
+    -- flattened with the SAME stale_ticks threshold and are always the same
+    -- length as their source histories, which are themselves kept the same
+    -- length as each other by push()ing every tick unconditionally in
+    -- update() below -- that equal length is what keeps "n ticks ago" in
+    -- one series lined up with "n ticks ago" in the other.
     ui.graph({
       width = GRAPH_WIDTH,
       height = GRAPH_HEIGHT,
-      values = cpu_history,
-      values2 = gpu_history,
+      values = graph_history.flatten(cpu_history, STALE_TICKS),
+      values2 = graph_history.flatten(gpu_history, STALE_TICKS),
       color = "primary",
       color2 = "tertiary",
       lineWidth = 1,
@@ -565,19 +787,48 @@ function update()
   last_ram = ram_percent()
   last_psi_cpu, last_psi_mem, last_psi_io = psi_triplet()
 
+  -- Owner-only: age the per-GPU staleness counters and republish STALE_KEY
+  -- every tick, regardless of whether anything changed -- a consumer must
+  -- be able to tell "still fresh" from "nothing new happened" even when
+  -- the underlying boolean hasn't flipped, and a stream that goes quiet
+  -- produces no onLine callback of its own to trigger a publish, so this
+  -- tick-driven publish is the only thing that ever ages it forward.
+  if is_owner then
+    nvidia_stale_ticks = nvidia_stale_ticks + 1
+    intel_stale_ticks = intel_stale_ticks + 1
+    -- Deliberately not the `A and B or C` ternary idiom: when B itself can
+    -- be `false` (it can, here), that idiom silently falls through to C
+    -- instead of returning `false` -- it only happens to be safe when C
+    -- and the intended false-case value are identical, which is easy to
+    -- break on a future edit. `== true` forces a real boolean explicitly.
+    local nvidia_known_available = gpu_available ~= nil and gpu_available.nvidia == true
+    local intel_known_available = gpu_available ~= nil and gpu_available.intel == true
+    noctalia.state.set(STALE_KEY, {
+      nvidia = nvidia_known_available and nvidia_stale_ticks >= STALE_TICKS,
+      intel = intel_known_available and intel_stale_ticks >= STALE_TICKS,
+    })
+  end
+
   -- History is sampled once per tick, in lockstep with cpu/ram/psi, so both
   -- graph series share one cadence regardless of how often GPU stream lines
   -- actually arrive (nvidia-smi dmon ticks on its own -d 2 schedule, the
-  -- Intel helper on its own). A tick with no valid reading is skipped
-  -- entirely, not padded with a fabricated 0 -- see clamp01/higher_gpu_pct
-  -- above and the "no misleading flat line" requirement this satisfies.
-  if cpu then
-    push_history(cpu_history, clamp01(cpu / 100))
-  end
+  -- Intel helper on its own).
+  --
+  -- BOTH series are pushed unconditionally, every tick, even when the
+  -- reading is nil -- graph_history.push stores an explicit invalid entry
+  -- rather than the call being skipped. Skipping the call on an invalid
+  -- tick (the previous approach) let cpu_history and gpu_history drift to
+  -- different lengths over time, and ui.graph stretches each series
+  -- independently across the same pixel width -- so a shorter, drifted
+  -- series would render its samples at different x positions than the
+  -- other series' samples taken at the very same tick. Pushing
+  -- unconditionally keeps index i of both histories anchored to the same
+  -- tick, always; graph_history.flatten (used in render() above) is what
+  -- turns a nil-containing history into the "no misleading flat line"
+  -- values ui.graph actually receives.
   local gpu_pct = higher_gpu_pct()
-  if gpu_pct then
-    push_history(gpu_history, clamp01(gpu_pct / 100))
-  end
+  graph_history.push(cpu_history, cpu and clamp01(cpu / 100) or nil, HISTORY_LEN)
+  graph_history.push(gpu_history, gpu_pct and clamp01(gpu_pct / 100) or nil, HISTORY_LEN)
 
   render()
 end

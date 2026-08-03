@@ -186,21 +186,33 @@ local th = thresholds
 -- gpu_available is tracked separately from gpu: available means "the owning
 -- widget instance has the tool/binary and started (or tried to start) its
 -- stream", data (gpu.nvidia/gpu.intel) means "a line has actually arrived".
--- A GPU can be available with no data yet (before its first line arrives,
--- or briefly after the owning widget instance changes) -- that renders as a
--- dimmed "--" row, not vanish, same as every other row in this panel.
--- Absent (no nvidia-smi / no helper binary on this machine) is the only
--- case that omits the row entirely -- there is no such GPU to report on.
 --
--- HONEST LIMITATION, not a feature: there is still no stream-death
--- detection, now one level removed -- if the owning widget's stream dies,
--- gpu.nvidia/gpu.intel simply stop receiving new state.set() calls and keep
--- their last published value forever; this panel has no way to tell "stale"
--- from "current" from here. This was true before this task too (the
--- comment it replaces said the same about a panel-owned stream); moving
--- stream ownership to the widget does not add or remove this limitation.
+-- gpu_available is a THREE-state value, not a boolean pair with a false
+-- default:
+--   nil    -- not yet known. Nothing has published AVAILABLE_KEY at all,
+--             which happens for a real ~4-6s window after every noctalia
+--             restart (the owning widget's 2-tick election plus its first
+--             probe) -- most visibly if this panel is opened during that
+--             window. build_rows below renders BOTH possible GPU rows
+--             dimmed "--" in this state, not omitted -- omitting them read
+--             as "this machine has no such hardware", which is not yet
+--             known one way or the other.
+--   table, field false -- known absent (no nvidia-smi / no helper binary on
+--             this machine). The row for that GPU is omitted entirely --
+--             there is no such GPU to report on, this is not a data gap.
+--   table, field true  -- known present. Row is shown, live or dimmed
+--             depending on gpu.X (no data yet) / gpu_stale.X (stream gone
+--             quiet -- see below).
 local gpu = { nvidia = nil, intel = nil }
-local gpu_available = { nvidia = false, intel = false }
+local gpu_available = nil
+-- Per-GPU freshness, owner-computed and published alongside gpu.nvidia/
+-- gpu.intel (see widget.luau's nvidia_stale_ticks/intel_stale_ticks and
+-- STALE_KEY) -- true means the most recent published value is old enough
+-- that showing it as a live current reading would be a lie. Defaults to
+-- not-stale for the same reason as widget.luau's copy of this default: it
+-- is only ever consulted alongside a gpu.X nil check in build_rows, so
+-- before STALE_KEY has ever been published it is moot.
+local gpu_stale = { nvidia = false, intel = false }
 
 -- Keys shared with widget.luau's copy of this same constant set -- kept in
 -- sync by hand, same as the inlined parse/thresholds libraries above, since
@@ -208,6 +220,7 @@ local gpu_available = { nvidia = false, intel = false }
 local NVIDIA_KEY = "sysmon_gpu_nvidia"
 local INTEL_KEY = "sysmon_gpu_intel"
 local AVAILABLE_KEY = "sysmon_gpu_available"
+local STALE_KEY = "sysmon_gpu_stale"
 
 -- Seed from whatever the owning widget instance has already published (it
 -- may have been running long before this panel was ever opened), then watch
@@ -219,7 +232,10 @@ local AVAILABLE_KEY = "sysmon_gpu_available"
 -- duplicate callbacks instead of replacing one.
 gpu.nvidia = noctalia.state.get(NVIDIA_KEY)
 gpu.intel = noctalia.state.get(INTEL_KEY)
-gpu_available = noctalia.state.get(AVAILABLE_KEY) or { nvidia = false, intel = false }
+-- No `or {...}` fallback: nil here IS the "not yet known" state build_rows
+-- distinguishes from "known absent" -- see the long comment above.
+gpu_available = noctalia.state.get(AVAILABLE_KEY)
+gpu_stale = noctalia.state.get(STALE_KEY) or { nvidia = false, intel = false }
 
 -- The watch callbacks below fire whether the panel is open or not (there is
 -- no way to unwatch), so each one guards its render() with is_open --
@@ -250,7 +266,12 @@ noctalia.state.watch(INTEL_KEY, function(v)
   if is_open then render() end
 end)
 noctalia.state.watch(AVAILABLE_KEY, function(v)
-  gpu_available = v or { nvidia = false, intel = false }
+  -- No `or {...}` fallback here either -- see the long comment above.
+  gpu_available = v
+  if is_open then render() end
+end)
+noctalia.state.watch(STALE_KEY, function(v)
+  gpu_stale = v or { nvidia = false, intel = false }
   if is_open then render() end
 end)
 
@@ -332,26 +353,35 @@ local function build_rows()
     cpu_temp and (cpu_temp .. " C") or "",
     th.level("cpu_usage", cpu_pct)))
 
-  -- Available-but-no-data-yet (or a stream that died mid-session) renders
-  -- as a dimmed "--" row, same as every other unreadable sensor in this
-  -- panel -- only a genuinely absent GPU (no nvidia-smi / no helper binary)
-  -- omits the row entirely.
-  if gpu_available.nvidia then
-    if gpu.nvidia then
-      table.insert(rows, metric_row("device-desktop", "NVIDIA",
-        gpu.nvidia.usage .. "%",
-        gpu.nvidia.temp .. " C",
-        th.level("gpu_temp", gpu.nvidia.temp)))
-    else
-      table.insert(rows, metric_row("device-desktop", "NVIDIA", "--", "", "unknown"))
+  -- Three states (see the long comment on `local gpu_available` near the
+  -- top of this file): not yet known -> both possible rows dimmed rather
+  -- than omitted (omitting them would read as "no such hardware", which is
+  -- not yet established either way); known absent -> row omitted entirely;
+  -- known present -> a live row, OR a dimmed "--" if no data has arrived
+  -- yet, OR a dimmed "--" if the most recent value has gone stale
+  -- (gpu_stale.X -- a stream that died mid-session must not keep showing
+  -- its last reading as if it were current).
+  if gpu_available == nil then
+    table.insert(rows, metric_row("device-desktop", "NVIDIA", "--", "", "unknown"))
+    table.insert(rows, metric_row("device-desktop", "INTEL", "--", "", "unknown"))
+  else
+    if gpu_available.nvidia then
+      if gpu.nvidia and not gpu_stale.nvidia then
+        table.insert(rows, metric_row("device-desktop", "NVIDIA",
+          gpu.nvidia.usage .. "%",
+          gpu.nvidia.temp .. " C",
+          th.level("gpu_temp", gpu.nvidia.temp)))
+      else
+        table.insert(rows, metric_row("device-desktop", "NVIDIA", "--", "", "unknown"))
+      end
     end
-  end
-  if gpu_available.intel then
-    if gpu.intel then
-      table.insert(rows, metric_row("device-desktop", "INTEL",
-        gpu.intel .. "%", "", "ok"))
-    else
-      table.insert(rows, metric_row("device-desktop", "INTEL", "--", "", "unknown"))
+    if gpu_available.intel then
+      if gpu.intel and not gpu_stale.intel then
+        table.insert(rows, metric_row("device-desktop", "INTEL",
+          gpu.intel .. "%", "", "ok"))
+      else
+        table.insert(rows, metric_row("device-desktop", "INTEL", "--", "", "unknown"))
+      end
     end
   end
 

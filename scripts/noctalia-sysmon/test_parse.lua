@@ -97,6 +97,110 @@ check("cpu pressure parses (no full line on some kernels)",
 check("garbage returns nil", parse.pressure("not pressure data") == nil)
 check("empty returns nil", parse.pressure("") == nil)
 
+local graph_history = require("graph_history")
+
+-- graph_history pins the index-alignment property widget.luau's bar graph
+-- depends on: two series fed to a single ui.graph must stay the same
+-- length at all times, because the host stretches each series
+-- independently across the same pixel width (confirmed by reading
+-- Graph::sync/GraphNode in the host source) -- a shorter series renders at
+-- a different time-per-pixel than a longer one, so "index i" in one no
+-- longer means the same tick as "index i" in the other. This was the
+-- concrete bug: the previous version of update() only called push() on a
+-- valid reading, so cpu_history and gpu_history silently drifted apart in
+-- length whenever the GPU had no reading for a tick (which is common right
+-- after a fresh election, or after any transient stream hiccup) and never
+-- resynced.
+do
+  local cpu, gpu = {}, {}
+  local n = 6
+  for i = 1, n do
+    graph_history.push(cpu, i * 0.1, 40) -- CPU: always a reading
+    if i == 2 or i == 4 then
+      graph_history.push(gpu, nil, 40) -- GPU: absent on ticks 2 and 4
+    else
+      graph_history.push(gpu, i * 0.05, 40)
+    end
+  end
+  check("push keeps both histories the same length even when one has gaps",
+        #cpu == n and #gpu == n)
+
+  local flat_cpu = graph_history.flatten(cpu, 3)
+  local flat_gpu = graph_history.flatten(gpu, 3)
+  check("flatten preserves length on the series with no gaps",
+        #flat_cpu == n)
+  check("flatten preserves length on the series WITH gaps -- this is the alignment property",
+        #flat_gpu == n)
+  check("flattened series stay the same length as each other",
+        #flat_cpu == #flat_gpu)
+
+  -- Tick 2's gap (interior, tail is fresh) is carried forward from tick 1's
+  -- real value, not fabricated as 0 and not left as a length-breaking hole.
+  check("interior gap is carried forward from the last real value, not zeroed",
+        flat_gpu[2] == flat_gpu[1] and flat_gpu[2] > 0)
+end
+
+-- Nothing valid anywhere in the window -> empty series, not a zero-filled
+-- one -- a flat line at zero would read as "idle", which is a specific
+-- claim this history never actually observed.
+do
+  local h = {}
+  for i = 1, 5 do graph_history.push(h, nil, 40) end
+  check("all-invalid history flattens to an empty series",
+        #graph_history.flatten(h, 3) == 0)
+end
+
+-- Tail gone stale (3+ consecutive misses counted back from "now") blanks
+-- the WHOLE series, even though older entries in the window were valid --
+-- this is the rule that stops a dead stream's last real reading from
+-- sitting frozen at the graph's right ("now") edge forever, indistinguishable
+-- from a live current value.
+do
+  local h = {}
+  graph_history.push(h, 0.5, 40)
+  graph_history.push(h, 0.6, 40)
+  for i = 1, 3 do graph_history.push(h, nil, 40) end -- 3 consecutive misses at the tail
+  check("a tail stale for >= stale_ticks blanks the whole series, not just the tail",
+        #graph_history.flatten(h, 3) == 0)
+end
+
+-- One or two dropped samples must NOT blank the series -- only genuine,
+-- sustained staleness should stop the line, not an isolated missed line
+-- (e.g. one unparseable dmon line).
+do
+  local h = {}
+  graph_history.push(h, 0.5, 40)
+  graph_history.push(h, nil, 40)
+  graph_history.push(h, nil, 40)
+  local flat = graph_history.flatten(h, 3)
+  check("a short gap below the stale threshold keeps the series alive",
+        #flat == 3)
+  check("a short trailing gap carries the last real value forward, not zero",
+        flat[3] == 0.5)
+end
+
+-- Leading gap (no valid sample yet at the very start of the window, e.g.
+-- the first tick or two right after a fresh GPU stream election) is
+-- back-filled with the first real value once one arrives, rather than left
+-- as a hole that would break the equal-length guarantee.
+do
+  local h = {}
+  graph_history.push(h, nil, 40)
+  graph_history.push(h, nil, 40)
+  graph_history.push(h, 0.3, 40)
+  local flat = graph_history.flatten(h, 3)
+  check("leading gap before any real value is back-filled with the first real value",
+        flat[1] == 0.3 and flat[2] == 0.3 and flat[3] == 0.3)
+end
+
+-- max_len cap still holds with push()'s new { v, ok } shape -- a
+-- regression here would let the graph history grow unbounded.
+do
+  local h = {}
+  for i = 1, 50 do graph_history.push(h, i * 0.01, 10) end
+  check("push still caps history length at max_len", #h == 10)
+end
+
 local th = require("thresholds")
 
 check("cpu below activity is ok",        th.level("cpu_usage", 69) == "ok")
@@ -286,6 +390,11 @@ for entry_name, entry_text in pairs(entries) do
   check_drift(entry_name, entry_text, "parse")
   check_drift(entry_name, entry_text, "thresholds")
 end
+
+-- graph_history.luau is only inlined into widget.luau -- panel.luau has no
+-- bar graph and never used it -- so this one is checked on its own rather
+-- than through the shared `entries` loop above.
+check_drift("widget", entries.widget, "graph_history")
 
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)
