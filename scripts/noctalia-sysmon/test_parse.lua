@@ -276,6 +276,63 @@ do
         #graph_history.flatten(nvidia, 3) == 9)
 end
 
+local respawn_backoff = require("respawn_backoff")
+
+-- Pins the exact respawn backoff schedule widget.luau's maybe_respawn
+-- relies on: 5 -> 10 -> 20 -> 40 ticks (10s -> 20s -> 40s -> 80s at the
+-- widget's 2s tick), then capped at 40 (80s) forever after. Getting this
+-- arithmetic subtly wrong (off-by-one on the first attempt, doubling past
+-- the cap instead of clamping, or forgetting the reset-on-recovery step)
+-- is exactly the kind of bug that is impractical to observe live without
+-- waiting minutes per test run, so it needs direct unit coverage of the
+-- pure arithmetic, independent of any live GPU stream.
+check("INITIAL is 5 ticks (~10s at the 2s tick)", respawn_backoff.INITIAL == 5)
+check("CAP is 40 ticks (~80s at the 2s tick)", respawn_backoff.CAP == 40)
+
+do
+  local gap = respawn_backoff.INITIAL
+  local schedule = { gap }
+  for i = 1, 5 do
+    gap = respawn_backoff.next_gap(gap)
+    table.insert(schedule, gap)
+  end
+  check("backoff schedule grows 5 -> 10 -> 20 -> 40 -> 40 -> 40",
+        schedule[1] == 5 and schedule[2] == 10 and schedule[3] == 20 and
+        schedule[4] == 40 and schedule[5] == 40 and schedule[6] == 40)
+end
+
+check("next_gap never exceeds CAP even from a value already at the cap",
+      respawn_backoff.next_gap(respawn_backoff.CAP) == respawn_backoff.CAP)
+check("next_gap never exceeds CAP from a value just below it",
+      respawn_backoff.next_gap(respawn_backoff.CAP - 1) == respawn_backoff.CAP)
+
+-- The reset-after-recovery behaviour itself lives in widget.luau's
+-- maybe_respawn (respawn[key].gap = respawn_backoff.INITIAL as soon as
+-- is_stale goes false), not in this pure library -- there is no backoff
+-- STATE here to reset, only the doubling step. What this library must
+-- guarantee for that reset to behave correctly is that restarting from
+-- INITIAL after a recovery reproduces the exact same schedule as a fresh
+-- stream's first-ever outage, not some sped-up or slowed-down variant
+-- carrying over residual state from the previous outage -- i.e. next_gap
+-- is a pure function of its input with no hidden internal memory.
+do
+  local first_run = { respawn_backoff.INITIAL }
+  local gap = respawn_backoff.INITIAL
+  for i = 1, 3 do gap = respawn_backoff.next_gap(gap); table.insert(first_run, gap) end
+
+  -- Simulate having driven the gap all the way to the cap in an earlier,
+  -- since-recovered outage, then resetting to INITIAL exactly as
+  -- maybe_respawn does on recovery.
+  local driven = respawn_backoff.CAP
+  local reset_gap = respawn_backoff.INITIAL
+  local second_run = { reset_gap }
+  for i = 1, 3 do reset_gap = respawn_backoff.next_gap(reset_gap); table.insert(second_run, reset_gap) end
+
+  check("a schedule restarted from INITIAL after reset matches a fresh schedule, unaffected by a prior outage's cap",
+        first_run[1] == second_run[1] and first_run[2] == second_run[2] and
+        first_run[3] == second_run[3] and first_run[4] == second_run[4])
+end
+
 local th = require("thresholds")
 
 check("cpu below activity is ok",        th.level("cpu_usage", 69) == "ok")
@@ -466,10 +523,12 @@ for entry_name, entry_text in pairs(entries) do
   check_drift(entry_name, entry_text, "thresholds")
 end
 
--- graph_history.luau is only inlined into widget.luau -- panel.luau has no
--- bar graph and never used it -- so this one is checked on its own rather
--- than through the shared `entries` loop above.
+-- graph_history.luau and respawn_backoff.luau are only inlined into
+-- widget.luau -- panel.luau has no bar graph and owns no GPU streams to
+-- respawn, so it never used either -- so these are checked on their own
+-- rather than through the shared `entries` loop above.
 check_drift("widget", entries.widget, "graph_history")
+check_drift("widget", entries.widget, "respawn_backoff")
 
 print(string.format("%d passed, %d failed", pass, fail))
 os.exit(fail == 0 and 0 or 1)

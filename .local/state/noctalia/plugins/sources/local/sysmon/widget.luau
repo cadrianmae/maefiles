@@ -233,6 +233,38 @@ function graph_history.flatten(history, stale_ticks)
 end
 -- END INLINED graph_history.luau
 
+-- BEGIN INLINED respawn_backoff.luau
+local respawn_backoff = {}
+
+-- INITIAL: the widget ticks every 2s (noctalia.setUpdateInterval(2000) in
+-- widget.luau), so 5 ticks is ~10s -- long enough that a single dropped or
+-- unparseable stream line (already tolerated by STALE_TICKS = 3, ~6s, for
+-- the graph-blanking decision) is never mistaken for a dead process, short
+-- enough to land the first respawn attempt inside the ~10-15s live
+-- verification window.
+respawn_backoff.INITIAL = 5
+
+-- CAP: doubling from INITIAL without a ceiling would eventually retry a
+-- permanently broken helper once every several minutes, but still forever,
+-- for the rest of the user's noctalia session -- worth bounding. 40 ticks
+-- is ~80s, inside the "roughly a minute to two minutes" ceiling a broken
+-- helper should be retried at once backoff has grown all the way out.
+respawn_backoff.CAP = 40
+
+-- Doubles the previous gap (ticks between respawn attempts), clamped so no
+-- gap ever exceeds CAP. Called once after each respawn attempt that did
+-- not bring the stream back before the next attempt was due. A caller
+-- resets its own gap variable back to INITIAL as soon as the stream
+-- produces fresh data again -- that reset is the caller's job (it is
+-- ordinary state, not arithmetic), this function only ever grows a gap
+-- forward.
+function respawn_backoff.next_gap(gap)
+  local n = gap * 2
+  if n > respawn_backoff.CAP then n = respawn_backoff.CAP end
+  return n
+end
+-- END INLINED respawn_backoff.luau
+
 local th = thresholds
 
 local prev_total, prev_idle = 0, 0
@@ -488,6 +520,8 @@ end
 -- and no instance could ever claim it again without the heartbeat check
 -- below.
 local start_streams, stop_streams, probe_gpu_availability
+local start_nvidia_stream, start_intel_stream
+local kill_stream_pid
 
 local function update_ownership()
   local current = noctalia.state.get(OWNER_KEY)
@@ -575,13 +609,22 @@ end
 -- take when it owned these streams. Every line is published to
 -- noctalia.state rather than kept as widget-local state, so the panel (and
 -- any other monitor's non-owner widget) can read it.
-start_streams = function()
-  probe_gpu_availability()
-
-  -- nvidia_stale_ticks/intel_stale_ticks reset to 0 right where each stream
-  -- actually publishes a fresh value -- update() below increments them
-  -- every owner tick and publishes the derived STALE_KEY, so a reset here
-  -- is what keeps a live stream from ever being reported stale.
+-- Split out of start_streams so a single-stream respawn (see maybe_respawn
+-- below) can (re)start just the one dead stream without re-running
+-- probe_gpu_availability -- that call spawns two more subprocesses
+-- (commandExists/fileExists) and, more importantly, availability is a
+-- settled fact for the session once first probed (see the long comment on
+-- maybe_respawn's known_available gate): re-probing on every respawn would
+-- blur "never available" and "available but its stream died" back
+-- together, which is exactly the distinction requirement 5 exists to keep.
+-- Each function keeps the same `gpu_available.X and not streams.X` guard
+-- start_streams always had, so calling either one when the stream is
+-- already running, or when that GPU was never available, is a no-op.
+start_nvidia_stream = function()
+  -- nvidia_stale_ticks resets to 0 right where the stream actually
+  -- publishes a fresh value -- update() below increments it every owner
+  -- tick and publishes the derived STALE_KEY, so a reset here is what
+  -- keeps a live stream from ever being reported stale.
   if gpu_available.nvidia and not streams.nvidia then
     streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
       local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
@@ -593,7 +636,9 @@ start_streams = function()
       end
     end)
   end
+end
 
+start_intel_stream = function()
   -- Ships with ksystemstats and already carries cap_perfmon, so no
   -- system-wide perf_event_paranoid change is needed. Absent if KDE's
   -- ksystemstats package is uninstalled, in which case gpu_available.intel
@@ -617,12 +662,30 @@ start_streams = function()
   end
 end
 
--- Carried over verbatim from panel.luau's original stop_streams (same PID
--- sentinel recovery, same SIGTERM-then-SIGKILL escalation, same pkill -x -f
--- last resort for a stream whose sentinel never arrived) -- this is the
--- "careful teardown" the panel used to be solely responsible for, now owned
--- by the widget instead of duplicated in both places.
---
+start_streams = function()
+  probe_gpu_availability()
+  start_nvidia_stream()
+  start_intel_stream()
+end
+
+-- The SIGTERM-then-SIGKILL escalation (with the pkill -x -f fallback for a
+-- stream whose sentinel never arrived), originally inline in stop_streams
+-- and carried over verbatim from panel.luau's original version of the same
+-- teardown. Extracted into its own function so both a full stop_streams()
+-- teardown AND a single-stream respawn (see maybe_respawn below, which
+-- needs to kill exactly one dead/hung stream without touching the other)
+-- call the identical kill sequence -- one implementation, not two that
+-- could drift apart.
+kill_stream_pid = function(key, pkill_pattern)
+  if stream_pids[key] then
+    noctalia.runAsync("sh -c 'kill " .. stream_pids[key] ..
+      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids[key] .. " 2>/dev/null' &")
+  elseif streams[key] then
+    noctalia.runAsync("pkill -x -f '" .. pkill_pattern .. "'")
+  end
+  stream_pids[key] = nil
+end
+
 -- Deliberately does NOT clear gpu_nvidia/gpu_intel/gpu_available: those are
 -- read from noctalia.state, which the new owner (if any) will overwrite
 -- with fresh readings within a couple of ticks. Wiping them here would just
@@ -632,24 +695,107 @@ end
 -- keeps the simpler behaviour (do nothing) rather than adding code to chase
 -- a marginal improvement.
 stop_streams = function()
-  if stream_pids.nvidia then
-    noctalia.runAsync("sh -c 'kill " .. stream_pids.nvidia ..
-      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.nvidia .. " 2>/dev/null' &")
-  elseif streams.nvidia then
-    noctalia.runAsync("pkill -x -f 'nvidia-smi dmon -d 2 -s pucm'")
-  end
-  stream_pids.nvidia = nil
-
-  if stream_pids.intel then
-    noctalia.runAsync("sh -c 'kill " .. stream_pids.intel ..
-      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.intel .. " 2>/dev/null' &")
-  elseif streams.intel then
-    noctalia.runAsync("pkill -x -f '" .. HELPER .. "'")
-  end
-  stream_pids.intel = nil
+  kill_stream_pid("nvidia", "nvidia-smi dmon -d 2 -s pucm")
+  kill_stream_pid("intel", HELPER)
 
   streams.nvidia, streams.intel = nil, nil
   intel_prev.render, intel_prev.ts = nil, nil
+end
+
+-- Per-stream state for the owner-only single-stream respawn below. Kept
+-- separate from nvidia_stale_ticks/intel_stale_ticks -- those two answer
+-- "how many ticks since the last valid line", this answers "how many more
+-- ticks until the owner is allowed to try killing-and-restarting this
+-- stream again". `gap` is the current backoff (grown by
+-- respawn_backoff.next_gap after every attempt that did not recover the
+-- stream before the next one came due, reset to respawn_backoff.INITIAL as
+-- soon as the stream is fresh again); `attempt_at` is the absolute
+-- nvidia_stale_ticks/intel_stale_ticks value the NEXT attempt is due at,
+-- so the schedule keeps counting from where the last attempt actually
+-- landed rather than restarting from "now" every tick. `awaiting_recovery`
+-- is only used to decide whether a recovery is worth the one log line
+-- requirement 6 allows -- a stream that has never needed a respawn has
+-- nothing to "recover" from.
+local respawn = {
+  nvidia = { gap = respawn_backoff.INITIAL, attempt_at = respawn_backoff.INITIAL, awaiting_recovery = false },
+  intel = { gap = respawn_backoff.INITIAL, attempt_at = respawn_backoff.INITIAL, awaiting_recovery = false },
+}
+
+-- Owner-only: kill-then-respawn exactly one GPU helper stream, independent
+-- of the other, when it has gone quiet while this instance stays alive and
+-- healthy -- the gap the heartbeat/ownership-reclaim mechanism above does
+-- NOT cover (that mechanism only fires for a dead OWNER; a dead child
+-- stream under a healthy owner was flagged as a known follow-up in the
+-- task-11 report, and closing it is this function's whole job).
+--
+-- `known_available` gates this on the SAME `gpu_available.X == true` fact
+-- update() already computes for STALE_KEY -- set once, at owner election,
+-- by probe_gpu_availability(), and never re-probed by this function. A
+-- helper the startup probe found absent (no nvidia-smi on this machine, no
+-- ksystemstats_intel_helper installed) stays absent for the rest of the
+-- session; `is_stale` can never legitimately mean "worth respawning" for a
+-- stream that was never running in the first place, so a false
+-- `known_available` short-circuits everything below before any kill/start
+-- is even considered.
+--
+-- `is_stale` is the SAME boolean update() just derived for STALE_KEY
+-- (nvidia_known_available/intel_known_available and
+-- nvidia_stale_ticks/intel_stale_ticks >= STALE_TICKS) -- passed in rather
+-- than recomputed, so the graph-blanking decision and the respawn decision
+-- can never silently disagree about whether a stream currently counts as
+-- stale.
+--
+-- Kill-before-respawn is unconditional whenever an attempt fires (never
+-- "maybe still alive, skip the kill"): a stream can go quiet without its
+-- process dying (a hung process, or a broken output pipe), so `streams.X`
+-- being non-nil proves nothing about whether the process is actually still
+-- running or producing anything. kill_stream_pid is the exact SIGTERM-then-
+-- SIGKILL-then-pkill sequence stop_streams() already uses for full
+-- teardown -- reused here unchanged, not reimplemented, so there is only
+-- ever one kill path in this file to reason about.
+local function maybe_respawn(key, label, is_stale, stale_ticks_val, pkill_pattern, start_fn, on_before_start)
+  local r = respawn[key]
+
+  if not is_stale then
+    -- Fresh data this tick (or never available in the first place, in
+    -- which case is_stale is always false and this branch is a no-op every
+    -- tick, which is fine). A respawn attempt earlier in this stale run
+    -- worked -- log the recovery exactly once, then reset the backoff back
+    -- to its initial value so the NEXT failure (a fully independent future
+    -- outage) starts counting from respawn_backoff.INITIAL again, not from
+    -- wherever this outage's backoff happened to grow to.
+    if r.awaiting_recovery then
+      noctalia.log("[sysmon] " .. label .. " stream recovered after respawn")
+      r.awaiting_recovery = false
+    end
+    r.gap = respawn_backoff.INITIAL
+    r.attempt_at = respawn_backoff.INITIAL
+    return
+  end
+
+  if stale_ticks_val < r.attempt_at then
+    -- Still within the current backoff window -- not due for another
+    -- attempt yet. This is what turns "respawn a genuinely broken helper"
+    -- into exponential backoff instead of a busy-loop: without this gate,
+    -- a stream that respawns but immediately dies again would be
+    -- kill-and-restarted on every single 2s tick for the rest of the
+    -- session.
+    return
+  end
+
+  local killed_pid = stream_pids[key]
+  noctalia.log("[sysmon] respawning " .. label .. " stream (stale " ..
+    stale_ticks_val .. " ticks" ..
+    (killed_pid and (", killed pid " .. killed_pid) or ", no recorded pid") .. ")")
+
+  kill_stream_pid(key, pkill_pattern)
+  streams[key] = nil
+  if on_before_start then on_before_start() end
+  start_fn()
+
+  r.gap = respawn_backoff.next_gap(r.gap)
+  r.attempt_at = stale_ticks_val + r.gap
+  r.awaiting_recovery = true
 end
 -- END GPU stream ownership + state
 
@@ -843,10 +989,26 @@ function update()
     -- break on a future edit. `== true` forces a real boolean explicitly.
     local nvidia_known_available = gpu_available ~= nil and gpu_available.nvidia == true
     local intel_known_available = gpu_available ~= nil and gpu_available.intel == true
-    noctalia.state.set(STALE_KEY, {
-      nvidia = nvidia_known_available and nvidia_stale_ticks >= STALE_TICKS,
-      intel = intel_known_available and intel_stale_ticks >= STALE_TICKS,
-    })
+    local nvidia_is_stale = nvidia_known_available and nvidia_stale_ticks >= STALE_TICKS
+    local intel_is_stale = intel_known_available and intel_stale_ticks >= STALE_TICKS
+    noctalia.state.set(STALE_KEY, { nvidia = nvidia_is_stale, intel = intel_is_stale })
+
+    -- Respawn a single dead/hung stream independently of the other -- see
+    -- maybe_respawn's own comment for the full reasoning. Both calls share
+    -- nothing but the pure respawn_backoff arithmetic; nvidia's `respawn`
+    -- entry and intel's are never read or written by the other call, so a
+    -- broken NVIDIA stream can never affect Intel's backoff schedule or
+    -- vice versa. Only the Intel path needs `on_before_start`: it clears
+    -- intel_prev the same way a full stop_streams() teardown already does,
+    -- so the first line from the freshly-spawned helper seeds a new
+    -- baseline instead of computing a percent against a stale prior sample
+    -- from possibly minutes earlier.
+    maybe_respawn("nvidia", "NVIDIA", nvidia_is_stale, nvidia_stale_ticks,
+      "nvidia-smi dmon -d 2 -s pucm", start_nvidia_stream)
+    maybe_respawn("intel", "Intel iGPU", intel_is_stale, intel_stale_ticks,
+      HELPER, start_intel_stream, function()
+        intel_prev.render, intel_prev.ts = nil, nil
+      end)
   end
 
   -- History is sampled once per tick, in lockstep with cpu/ram/psi, so all
