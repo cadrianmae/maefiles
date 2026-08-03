@@ -300,9 +300,9 @@ local gpu_available = nil
 -- computed (see nvidia_stale_ticks/intel_stale_ticks below) and read by
 -- every instance the same way as gpu_nvidia/gpu_intel/gpu_available.
 -- Defaults to not-stale: this is only ever consulted alongside a non-nil
--- gpu_nvidia/gpu_intel check (see higher_gpu_pct), so before any reading
--- has ever arrived it is moot -- gpu_nvidia/gpu_intel being nil already
--- makes higher_gpu_pct() report "no data" regardless of this flag's
+-- gpu_nvidia/gpu_intel check (see intel_gpu_pct/nvidia_gpu_pct below), so
+-- before any reading has ever arrived it is moot -- gpu_nvidia/gpu_intel
+-- being nil already makes those report "no data" regardless of this flag's
 -- pre-publish default.
 local gpu_stale = { nvidia = false, intel = false }
 
@@ -340,7 +340,7 @@ local HELPER = "/usr/libexec/ksystemstats_intel_helper"
 local NVIDIA_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec nvidia-smi dmon -d 2 -s pucm'"
 local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 
--- Rolling history for the bar graph. Sized to the graph's own pixel width
+-- Rolling history for the bar graphs. Sized to each graph's own pixel width
 -- (40) so each history slot is roughly one pixel column -- more samples than
 -- that would just be invisible sub-pixel data, fewer would leave columns
 -- blank. At the 2s widget tick used below, 40 samples is ~80s of visible
@@ -348,17 +348,28 @@ local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 -- bar element dominating the row (matches the glyph-sized RAM/PSI elements
 -- it sits beside).
 --
--- Both histories are pushed exactly once per tick, unconditionally, in
--- lockstep, via graph_history.push -- see that function's comment (in the
--- INLINED graph_history.luau block above) for why: skipping a push on an
--- invalid tick lets the two series drift to different lengths, which
--- ui.graph then stretches across the same width independently, breaking
--- the index correspondence between "n ticks ago" in one series and the
--- other.
+-- THREE histories now (CPU, Intel iGPU, NVIDIA dGPU), rendered as two
+-- ui.graph controls below -- see render() for why the two GPUs cannot share
+-- CPU's graph as a third series. ALL THREE are pushed exactly once per
+-- tick, unconditionally, in lockstep, via graph_history.push -- see that
+-- function's comment (in the INLINED graph_history.luau block above) for
+-- why: skipping a push on an invalid tick lets the histories drift to
+-- different lengths, which ui.graph then stretches across the same width
+-- independently, breaking the index correspondence between "n ticks ago" in
+-- one series and another. This applies just as much to the two series
+-- sharing the GPU graph (intel_history/nvidia_history) as it did to the
+-- old combined cpu_history/gpu_history pair -- three histories is not an
+-- excuse to relax the "every tick, every history" rule for any of them.
 local HISTORY_LEN = 40
 local GRAPH_WIDTH, GRAPH_HEIGHT = 40, 16
+-- Gap between the CPU graph and the GPU graph -- deliberately smaller than
+-- the outer row's own gap (8, see render()) so the two graphs still read as
+-- one "graphs" section at a glance, while the row gap keeps that section
+-- visually separated from the RAM and PSI elements beside it.
+local GRAPH_GAP = 4
 local cpu_history = {}
-local gpu_history = {}
+local intel_history = {}
+local nvidia_history = {}
 
 -- ui.graph wants 0-1; a momentarily bogus sensor read (or simple rounding at
 -- the 100% boundary) above 100 or below 0 must not corrupt the graph's
@@ -405,24 +416,27 @@ noctalia.state.watch(STALE_KEY, function(v)
   render()
 end)
 
--- The higher of the two GPUs' usage, or nil if a GPU has never reported or
--- its most recent report has gone stale (see gpu_stale/STALE_TICKS above).
--- A stale reading must not feed the graph as if it were current -- that is
--- exactly the "frozen number looks live" failure this task exists to close
--- -- so it is excluded here, upstream of graph_history.push in update()
--- below, rather than trying to special-case it later.
+-- Each GPU's own usage, or nil if it has never reported or its most recent
+-- report has gone stale (see gpu_stale/STALE_TICKS above). A stale reading
+-- must not feed the graph as if it were current -- that is exactly the
+-- "frozen number looks live" failure this task exists to close -- so it is
+-- excluded here, upstream of graph_history.push in update() below, rather
+-- than trying to special-case it later.
 --
--- ui.graph only accepts two series from Lua (values/values2 -- the C++
--- Graph class does have setValues3/setColor3, but the prop whitelist in
--- ui_tree_reconciler.cpp omits values3/color3, so a third series is not
--- reachable from a plugin at all). With CPU already taking one series,
--- both GPUs must share the other; the panel keeps showing them as separate
--- labelled rows, since it has room and the bar does not.
-local function higher_gpu_pct()
-  local n = (gpu_nvidia and not gpu_stale.nvidia) and gpu_nvidia.usage or nil
-  local i = (not gpu_stale.intel) and gpu_intel or nil
-  if n and i then return math.max(n, i) end
-  return n or i
+-- These used to be combined into one higher_gpu_pct() (math.max of the
+-- two) because ui.graph only accepts two series from Lua (values/values2 --
+-- the C++ Graph class does have setValues3/setColor3, but the prop
+-- whitelist in ui_tree_reconciler.cpp omits values3/color3, so a third
+-- series is not reachable from a plugin at all). That combining is exactly
+-- what this task removes: with CPU alone taking the first graph's one
+-- series, the two GPUs now get a SECOND graph to themselves (see render()),
+-- so each keeps its own series and neither hides the other anymore.
+local function intel_gpu_pct()
+  return (not gpu_stale.intel) and gpu_intel or nil
+end
+
+local function nvidia_gpu_pct()
+  return (gpu_nvidia and not gpu_stale.nvidia) and gpu_nvidia.usage or nil
 end
 
 -- Cross-monitor stream ownership.
@@ -737,35 +751,61 @@ function render()
   local psi_color = th.color(psi_level)
 
   barWidget.render(ui.row({ gap = 8, align = "center", onClick = "onClick" }, {
-    -- CPU icon+percentage replaced by a two-series graph: series 1 is CPU
-    -- usage, series 2 is the higher of the two GPUs (see higher_gpu_pct).
-    -- "primary"/"tertiary" are plain distinct palette roles, not health
-    -- colours from thresholds.color -- a graph trend line has no single
-    -- "level" to colour by the way a scalar percent does, and borrowing
-    -- thresholds.color's roles here would falsely imply the GPU series is
-    -- always "critical" (thresholds.color's "error"/red role) rather than
-    -- just being a different series. RAM and PSI keep using thresholds.color
+    -- CPU icon+percentage replaced by two single-purpose graphs, nested in
+    -- their own row so a small GRAPH_GAP (4px) separates them from each
+    -- other without disturbing the outer row's own gap (8px) to the RAM/PSI
+    -- elements beside them. This is a deliberate split, not a doubled-up
+    -- version of the old single graph: ui.graph only accepts two series
+    -- from Lua (values/values2 -- the C++ Graph class does have
+    -- setValues3/setColor3, but the prop whitelist in
+    -- ui_tree_reconciler.cpp omits values3/color3, so a third series is not
+    -- reachable from a plugin at all), and the previous single graph used
+    -- to spend its second series on math.max(nvidia, intel) -- which hid
+    -- which GPU was actually busy. Two graphs is how CPU, Intel iGPU and
+    -- NVIDIA dGPU all become visible: graph 1 is CPU alone, graph 2 gives
+    -- each GPU its own series.
+    --
+    -- "primary"/"secondary"/"tertiary" are plain distinct Material palette
+    -- roles (confirmed in the host's src/ui/palette.h ColorRole table), not
+    -- health colours from thresholds.color -- a graph trend line has no
+    -- single "level" to colour by the way a scalar percent does, and
+    -- borrowing thresholds.color's roles here would falsely imply a series
+    -- is always "critical" (thresholds.color's "error"/red role) rather
+    -- than just being a different series. "error" is deliberately left
+    -- alone for that reason. RAM and PSI keep using thresholds.color
     -- exactly as before -- they are unchanged by this task.
     --
     -- graph_history.flatten (not the raw history tables) is what actually
     -- goes to ui.graph -- see that function's comment for the full rules,
     -- summarised: nothing valid anywhere -> {} (no line at all), the tail
     -- gone stale -> also {} (never leave a frozen "now" on screen), else a
-    -- same-length array with short gaps carried forward. Both series are
-    -- flattened with the SAME stale_ticks threshold and are always the same
-    -- length as their source histories, which are themselves kept the same
-    -- length as each other by push()ing every tick unconditionally in
-    -- update() below -- that equal length is what keeps "n ticks ago" in
-    -- one series lined up with "n ticks ago" in the other.
-    ui.graph({
-      width = GRAPH_WIDTH,
-      height = GRAPH_HEIGHT,
-      values = graph_history.flatten(cpu_history, STALE_TICKS),
-      values2 = graph_history.flatten(gpu_history, STALE_TICKS),
-      color = "primary",
-      color2 = "tertiary",
-      lineWidth = 1,
-      fillOpacity = 0.15,
+    -- same-length array with short gaps carried forward. All three series
+    -- are flattened with the SAME stale_ticks threshold, and each GPU's
+    -- flatten is independent of the other's -- Intel going stale blanks
+    -- only intel_history's line, NVIDIA's keeps drawing, and vice versa,
+    -- because gpu_stale is tracked and applied per GPU (see
+    -- intel_gpu_pct/nvidia_gpu_pct above and update() below), never
+    -- combined the way the old higher_gpu_pct() used to combine the
+    -- readings themselves.
+    ui.row({ gap = GRAPH_GAP }, {
+      ui.graph({
+        width = GRAPH_WIDTH,
+        height = GRAPH_HEIGHT,
+        values = graph_history.flatten(cpu_history, STALE_TICKS),
+        color = "primary",
+        lineWidth = 1,
+        fillOpacity = 0.15,
+      }),
+      ui.graph({
+        width = GRAPH_WIDTH,
+        height = GRAPH_HEIGHT,
+        values = graph_history.flatten(intel_history, STALE_TICKS),
+        values2 = graph_history.flatten(nvidia_history, STALE_TICKS),
+        color = "secondary",
+        color2 = "tertiary",
+        lineWidth = 1,
+        fillOpacity = 0.15,
+      }),
     }),
     ui.glyph({ name = "device-sd-card", size = 14, color = ram_color }),
     ui.label({ text = fmt_pct(last_ram), color = ram_color, fontWeight = "bold" }),
@@ -809,26 +849,33 @@ function update()
     })
   end
 
-  -- History is sampled once per tick, in lockstep with cpu/ram/psi, so both
-  -- graph series share one cadence regardless of how often GPU stream lines
-  -- actually arrive (nvidia-smi dmon ticks on its own -d 2 schedule, the
-  -- Intel helper on its own).
+  -- History is sampled once per tick, in lockstep with cpu/ram/psi, so all
+  -- three histories share one cadence regardless of how often the GPU
+  -- stream lines actually arrive (nvidia-smi dmon ticks on its own -d 2
+  -- schedule, the Intel helper on its own).
   --
-  -- BOTH series are pushed unconditionally, every tick, even when the
-  -- reading is nil -- graph_history.push stores an explicit invalid entry
-  -- rather than the call being skipped. Skipping the call on an invalid
-  -- tick (the previous approach) let cpu_history and gpu_history drift to
-  -- different lengths over time, and ui.graph stretches each series
-  -- independently across the same pixel width -- so a shorter, drifted
-  -- series would render its samples at different x positions than the
-  -- other series' samples taken at the very same tick. Pushing
-  -- unconditionally keeps index i of both histories anchored to the same
-  -- tick, always; graph_history.flatten (used in render() above) is what
-  -- turns a nil-containing history into the "no misleading flat line"
-  -- values ui.graph actually receives.
-  local gpu_pct = higher_gpu_pct()
+  -- ALL THREE histories are pushed unconditionally, every tick, even when
+  -- the reading is nil -- graph_history.push stores an explicit invalid
+  -- entry rather than the call being skipped. Skipping a push on an invalid
+  -- tick (the previous approach, and the same mistake this task must not
+  -- reintroduce for intel_history/nvidia_history) lets a history drift to a
+  -- different length than the others over time, and ui.graph stretches
+  -- each series independently across the same pixel width -- so a shorter,
+  -- drifted series would render its samples at different x positions than
+  -- another series' samples taken at the very same tick. This matters
+  -- doubly for intel_history/nvidia_history: they share one graph
+  -- (values/values2), so if either drifts out of step with the other, the
+  -- two GPU lines would no longer even agree with EACH OTHER on which
+  -- pixel column is "now", not just with the CPU graph next to them.
+  -- Pushing unconditionally keeps index i of all three histories anchored
+  -- to the same tick, always; graph_history.flatten (used in render()
+  -- above) is what turns a nil-containing history into the "no misleading
+  -- flat line" values ui.graph actually receives.
+  local intel_pct = intel_gpu_pct()
+  local nvidia_pct = nvidia_gpu_pct()
   graph_history.push(cpu_history, cpu and clamp01(cpu / 100) or nil, HISTORY_LEN)
-  graph_history.push(gpu_history, gpu_pct and clamp01(gpu_pct / 100) or nil, HISTORY_LEN)
+  graph_history.push(intel_history, intel_pct and clamp01(intel_pct / 100) or nil, HISTORY_LEN)
+  graph_history.push(nvidia_history, nvidia_pct and clamp01(nvidia_pct / 100) or nil, HISTORY_LEN)
 
   render()
 end

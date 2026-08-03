@@ -201,6 +201,81 @@ do
   check("push still caps history length at max_len", #h == 10)
 end
 
+-- Task 11 (split CPU/GPU graphs): widget.luau now keeps THREE histories --
+-- cpu_history, intel_history, nvidia_history -- instead of the old two
+-- (cpu_history/gpu_history). intel_history and nvidia_history share one
+-- ui.graph (values/values2), so if they drift out of step with each other
+-- the two GPU lines would disagree with each other about which pixel
+-- column is "now", not just with the CPU graph next to them -- a strictly
+-- worse failure than the original two-history drift bug this suite already
+-- pins above. Simulate a tick sequence where Intel and NVIDIA go missing on
+-- DIFFERENT ticks (not the same ticks, and not always together) -- the
+-- scenario that would actually expose a per-series push bug, since if both
+-- GPUs always dropped in lockstep a missing shared push could hide behind
+-- the other one still being called correctly.
+do
+  local cpu, intel, nvidia = {}, {}, {}
+  local n = 10
+  for i = 1, n do
+    graph_history.push(cpu, i * 0.01, 40) -- CPU: always a reading
+    if i == 2 or i == 5 or i == 6 then
+      graph_history.push(intel, nil, 40) -- Intel missing on 2, 5, 6
+    else
+      graph_history.push(intel, i * 0.02, 40)
+    end
+    if i == 3 or i == 4 or i == 8 then
+      graph_history.push(nvidia, nil, 40) -- NVIDIA missing on 3, 4, 8 -- disjoint from Intel's gaps
+    else
+      graph_history.push(nvidia, i * 0.03, 40)
+    end
+  end
+  check("three histories stay equal length after a tick sequence with disjoint per-GPU gaps",
+        #cpu == n and #intel == n and #nvidia == n)
+
+  local flat_cpu = graph_history.flatten(cpu, 3)
+  local flat_intel = graph_history.flatten(intel, 3)
+  local flat_nvidia = graph_history.flatten(nvidia, 3)
+  check("flattened CPU history keeps full length",
+        #flat_cpu == n)
+  check("flattened Intel history keeps full length despite its own gaps",
+        #flat_intel == n)
+  check("flattened NVIDIA history keeps full length despite its own, DIFFERENT gaps",
+        #flat_nvidia == n)
+  check("all three flattened series stay the same length as each other",
+        #flat_cpu == #flat_intel and #flat_intel == #flat_nvidia)
+
+  -- Tick 8 is NVIDIA's last gap and tick 8 is fine for Intel -- confirms
+  -- each series' flatten only reacts to ITS OWN tail, not the other GPU's.
+  check("NVIDIA's tail (tick 8 gap, ticks 9-10 real) is fresh enough to stay drawn",
+        #flat_nvidia > 0)
+  check("Intel's tail (ticks 9-10 real, no trailing gap) is fresh and stays drawn",
+        #flat_intel > 0)
+end
+
+-- One GPU stream dying entirely for the rest of the window (the "kill the
+-- Intel helper" scenario from the task's live verification step) must blank
+-- only ITS OWN series while the other GPU's series -- still receiving real
+-- ticks the whole time -- keeps drawing. This is the property that was not
+-- observable at all when both GPUs shared one combined series (the old
+-- higher_gpu_pct() behaviour): it must be pinned now that they are split.
+do
+  local intel, nvidia = {}, {}
+  for i = 1, 5 do
+    graph_history.push(intel, i * 0.1, 40)
+    graph_history.push(nvidia, i * 0.1, 40)
+  end
+  -- Intel dies here: 4 consecutive misses at the tail (>= STALE_TICKS's 3).
+  -- NVIDIA keeps reporting every tick, unaffected.
+  for i = 1, 4 do
+    graph_history.push(intel, nil, 40)
+    graph_history.push(nvidia, (5 + i) * 0.1, 40)
+  end
+  check("dead Intel stream blanks only the Intel series",
+        #graph_history.flatten(intel, 3) == 0)
+  check("still-live NVIDIA series is unaffected by Intel going stale",
+        #graph_history.flatten(nvidia, 3) == 9)
+end
+
 local th = require("thresholds")
 
 check("cpu below activity is ok",        th.level("cpu_usage", 69) == "ok")
