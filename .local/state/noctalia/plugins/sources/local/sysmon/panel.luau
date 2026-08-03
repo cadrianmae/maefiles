@@ -173,32 +173,86 @@ end
 
 local th = thresholds
 
--- GPU state lives only while the panel is open (see start_streams/
--- stop_streams below) -- the panel is the only consumer of GPU data, so
--- nothing runs in the background when it is shut. gpu.nvidia/gpu.intel stay
--- nil until the first line arrives from each stream, and are wiped again on
--- close so a reopened panel never shows a stale reading from before.
+-- GPU state used to live only while this panel was open, with the panel
+-- owning both streams directly (start_streams/stop_streams, PID sentinel
+-- capture, SIGTERM/SIGKILL escalation, pkill -x -f fallback). That has moved
+-- to widget.luau: the bar needs GPU data continuously (for its graph), not
+-- just while this panel happens to be open, and the plugin loads once per
+-- monitor, so only one widget instance may own the streams at a time (see
+-- widget.luau's update_ownership for the cross-monitor arbitration). This
+-- panel now owns no streams at all -- it only reads noctalia.state, exactly
+-- like a non-owner widget instance does.
 --
--- gpu_available is tracked separately from gpu: available means "this
--- machine has the tool/binary and we started (or tried to start) its
+-- gpu_available is tracked separately from gpu: available means "the owning
+-- widget instance has the tool/binary and started (or tried to start) its
 -- stream", data (gpu.nvidia/gpu.intel) means "a line has actually arrived".
--- A GPU can be available with no data yet (before its first line arrives)
--- -- that renders as a dimmed "--" row, not vanish, same as every other row
--- in this panel. Absent (no nvidia-smi / no helper binary) is the only
+-- A GPU can be available with no data yet (before its first line arrives,
+-- or briefly after the owning widget instance changes) -- that renders as a
+-- dimmed "--" row, not vanish, same as every other row in this panel.
+-- Absent (no nvidia-smi / no helper binary on this machine) is the only
 -- case that omits the row entirely -- there is no such GPU to report on.
 --
--- HONEST LIMITATION, not a feature: there is no stream-death detection.
--- runStream's onLine callback simply stops being called if the process
--- dies mid-session (crash, killed externally, etc.) -- gpu.nvidia/gpu.intel
--- keep their last value forever, the row does NOT dim or flag itself as
--- stale, and stream_pids.X keeps pointing at a PID that no longer exists.
--- The only way to clear a frozen reading is to close and reopen the panel,
--- which wipes gpu.*/gpu_available and restarts both streams from scratch.
+-- HONEST LIMITATION, not a feature: there is still no stream-death
+-- detection, now one level removed -- if the owning widget's stream dies,
+-- gpu.nvidia/gpu.intel simply stop receiving new state.set() calls and keep
+-- their last published value forever; this panel has no way to tell "stale"
+-- from "current" from here. This was true before this task too (the
+-- comment it replaces said the same about a panel-owned stream); moving
+-- stream ownership to the widget does not add or remove this limitation.
 local gpu = { nvidia = nil, intel = nil }
 local gpu_available = { nvidia = false, intel = false }
-local intel_prev = { render = nil, ts = nil }
-local streams = { nvidia = nil, intel = nil }
-local stream_pids = { nvidia = nil, intel = nil }
+
+-- Keys shared with widget.luau's copy of this same constant set -- kept in
+-- sync by hand, same as the inlined parse/thresholds libraries above, since
+-- isolated Luau VMs cannot require() a shared constants file either.
+local NVIDIA_KEY = "sysmon_gpu_nvidia"
+local INTEL_KEY = "sysmon_gpu_intel"
+local AVAILABLE_KEY = "sysmon_gpu_available"
+
+-- Seed from whatever the owning widget instance has already published (it
+-- may have been running long before this panel was ever opened), then watch
+-- for further updates -- noctalia.state watchers do not replay the current
+-- value on registration, only future set() calls. Registered once here at
+-- panel load time, not per onOpen/onClose: there is no unwatch exposed to
+-- Luau (watchers for a runtime are only cleaned up wholesale on that
+-- runtime's own reload/stop), so re-registering on every onOpen would stack
+-- duplicate callbacks instead of replacing one.
+gpu.nvidia = noctalia.state.get(NVIDIA_KEY)
+gpu.intel = noctalia.state.get(INTEL_KEY)
+gpu_available = noctalia.state.get(AVAILABLE_KEY) or { nvidia = false, intel = false }
+
+-- The watch callbacks below fire whether the panel is open or not (there is
+-- no way to unwatch), so each one guards its render() with is_open --
+-- calling panel.render() while genuinely closed would rebuild a tree no one
+-- can see, for no benefit.
+local is_open = false
+
+-- Forward-declared: render() is defined further down (it needs build_rows,
+-- metric_row, etc., which are not written yet at this point in the file),
+-- but the watch callbacks registered immediately below capture it as an
+-- upvalue. Without this forward `local`, those closures would resolve the
+-- bare name `render` as a global at the point they are WRITTEN (Lua scoping
+-- is lexical, not "whatever exists by the time this code eventually runs")
+-- -- and no global `render` exists, so every watch-driven update while the
+-- panel was open would error "attempt to call a nil value" instead of
+-- refreshing. Declaring the local here, then assigning `render = function()
+-- ... end` later (not `local function render()`, which would create a
+-- SECOND, separate local and leave this upvalue nil forever) is what makes
+-- the later definition visible to these earlier closures.
+local render
+
+noctalia.state.watch(NVIDIA_KEY, function(v)
+  gpu.nvidia = v
+  if is_open then render() end
+end)
+noctalia.state.watch(INTEL_KEY, function(v)
+  gpu.intel = v
+  if is_open then render() end
+end)
+noctalia.state.watch(AVAILABLE_KEY, function(v)
+  gpu_available = v or { nvidia = false, intel = false }
+  if is_open then render() end
+end)
 
 -- CPU usage is a delta and needs two /proc/stat samples separated in time;
 -- a single read gives cumulative-since-boot numbers, which render as a
@@ -233,17 +287,6 @@ local cpu_pct = nil -- nil until a valid delta exists; renders "--" dimmed
 -- not expose. See refresh_disk below (defined after render(), which its
 -- callback captures as a local upvalue).
 local disk = nil
-
-local HELPER = "/usr/libexec/ksystemstats_intel_helper"
-
--- Wrapped in `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'`: `exec` replaces the
--- shell with the real program in place, so `$$` (the shell's own PID,
--- printed before the replacement happens) IS the final process's PID, not a
--- wrapper left behind as an orphan. This is how stop_streams recovers an
--- exact, killable PID from a runStream that returns no handle -- see the
--- long comment on start_streams for why that's necessary.
-local NVIDIA_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec nvidia-smi dmon -d 2 -s pucm'"
-local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 
 local function pct_of(used, total)
   if total == 0 then return 0 end
@@ -380,7 +423,10 @@ local function build_rows()
   return rows
 end
 
-local function render()
+-- Assigns the forward-declared local from above -- deliberately NOT
+-- `local function render()`, which would shadow it with a second, separate
+-- local and leave the watch callbacks' captured upvalue nil forever.
+render = function()
   panel.render(ui.column({ gap = 8, padding = 16 }, {
     ui.row({ justify = "space_between", align = "center" }, {
       ui.label({ text = "System", fontSize = 16, fontWeight = "bold" }),
@@ -400,131 +446,6 @@ local function refresh_disk()
       render()
     end
   end)
-end
-
--- Streams live only while the panel is open. Neither GPU exposes utilisation
--- in sysfs; this copies KDE's approach exactly (see NvidiaSmiProcess.cpp and
--- the ksystemstats Intel helper upstream) rather than polling anything
--- ourselves. The panel is the only consumer, so nothing runs when it is
--- shut -- no timers, no background processes.
---
--- DEVIATION FROM THE ORIGINAL BRIEF, found empirically (live probe: a
--- boolean, not a table, came back from runStream; logged via noctalia.log)
--- and confirmed against docs.noctalia.dev/v5/plugins/development/runtime-api/:
--- `noctalia.runStream(cmd, onLine)` returns a plain bool, not a handle --
--- unlike httpStream(), it has no stop(). The docs state streams are only
--- reaped "when the script reloads, the entry is removed, or Noctalia stops
--- the plugin" -- none of which happen on a panel close. Calling the
--- documented-nonexistent handle.stop() is exactly what threw
--- "attempt to index boolean with 'stop'" the first time this ran live.
---
--- A first fix used `pkill -f '<exact command>'` via runAsync. Code review
--- rejected that: pkill -f substring-matches ANY process's argv system-wide,
--- with no PID tracking. Concretely it would (1) kill a user's own manually
--- run `nvidia-smi dmon -d 2 -s pucm` in a terminal, and (2) with noctalia
--- loaded once per output (this machine runs 2: eDP-1 and HDMI-A-1), each
--- monitor's panel starts its own identically-worded stream -- pkill -f
--- cannot tell them apart, so closing one monitor's panel would kill the
--- other monitor's still-open stream. Neither is acceptable.
---
--- Fix: recover the exact PID with no pattern matching at all. Each command
--- is wrapped so the shell prints its own PID before `exec`-ing into the
--- real program (see NVIDIA_CMD/HELPER_CMD above) -- `exec` replaces the
--- shell in place, so that PID IS the real process's PID, not a wrapper. The
--- sentinel line is intercepted in onLine before it ever reaches the parser
--- (parse.nvidia_dmon/parse.intel_helper also independently reject it as
--- unparseable -- pinned in test_parse.lua -- so this is belt-and-suspenders,
--- not the only guard). stop_streams then kills exactly that PID and
--- nothing else, which also closes the reopen race a reviewer flagged: an
--- exact `kill <pid>` can never touch a newly started stream's new PID.
---
--- Two further hardenings from a second review round, both in stop_streams:
--- (1) if the sentinel line never arrives at all (helper died before the
--- echo flushed, or before exec ran), stream_pids.X stays nil and there is
--- no PID to target -- fall back to killing by exact WHOLE-command-line
--- match (pkill -x -f) rather than silently leaking the process. This is a
--- last resort reachable only when the primary PID capture failed, and is
--- still narrower than the rejected `pkill -f`: -x requires the entire
--- cmdline to equal the pattern, not merely contain it, so it cannot
--- collateral-kill an unrelated command that happens to embed the same
--- substring -- though it would still catch a user manually running the
--- identical command, which is why it stays a fallback, not the default.
--- (2) the primary PID kill sends SIGTERM first and escalates to SIGKILL
--- two seconds later if the process is still alive -- neither helper is
--- expected to ignore SIGTERM, but a stuck one would otherwise persist for
--- the rest of the noctalia session with no further way to reach it.
-local function start_streams()
-  if noctalia.commandExists("nvidia-smi") then
-    gpu_available.nvidia = true
-    if not streams.nvidia then
-      streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
-        local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
-        if pid then stream_pids.nvidia = pid; return end
-        local n = parse.nvidia_dmon(line)
-        if n then gpu.nvidia = n; render() end
-      end)
-    end
-  end
-
-  -- Ships with ksystemstats and already carries cap_perfmon, so no
-  -- system-wide perf_event_paranoid change is needed. Absent if KDE's
-  -- ksystemstats package is uninstalled, in which case gpu_available.intel
-  -- stays false and the INTEL row is omitted entirely (there is no such
-  -- GPU-monitoring path to report on, as opposed to one that has data yet).
-  if noctalia.fileExists(HELPER) then
-    gpu_available.intel = true
-    if not streams.intel then
-      streams.intel = noctalia.runStream(HELPER_CMD, function(line)
-        local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
-        if pid then stream_pids.intel = pid; return end
-        local i = parse.intel_helper(line)
-        if not i then return end
-        -- First line has no prior sample to diff against -- seed the
-        -- baseline and skip rendering rather than showing a bogus 0%.
-        if intel_prev.ts then
-          gpu.intel = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
-          render()
-        end
-        intel_prev.render, intel_prev.ts = i.render, i.timestamp
-      end)
-    end
-  end
-end
-
-local function stop_streams()
-  if stream_pids.nvidia then
-    -- SIGTERM first so the process can exit cleanly; escalate to SIGKILL
-    -- only if it is still alive two seconds later. See the long comment
-    -- above start_streams for why.
-    noctalia.runAsync("sh -c 'kill " .. stream_pids.nvidia ..
-      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.nvidia .. " 2>/dev/null' &")
-  elseif streams.nvidia then
-    -- The sentinel never arrived, so there is no PID to target. Fall back
-    -- to matching the process's whole command line exactly (-x -f), which
-    -- cannot substring-match an unrelated command line the way the
-    -- rejected `pkill -f` could. Still imperfect -- it would also match a
-    -- user-run nvidia-smi with the identical flags -- so it is a last
-    -- resort only reachable when the helper died before printing its PID.
-    noctalia.runAsync("pkill -x -f 'nvidia-smi dmon -d 2 -s pucm'")
-  end
-  stream_pids.nvidia = nil
-
-  if stream_pids.intel then
-    noctalia.runAsync("sh -c 'kill " .. stream_pids.intel ..
-      " 2>/dev/null; sleep 2; kill -9 " .. stream_pids.intel .. " 2>/dev/null' &")
-  elseif streams.intel then
-    noctalia.runAsync("pkill -x -f '" .. HELPER .. "'")
-  end
-  stream_pids.intel = nil
-
-  streams.nvidia, streams.intel = nil, nil
-  intel_prev.render, intel_prev.ts = nil, nil
-  -- Wipe readings and availability, not just the pids: a reopened panel
-  -- must show "no data yet" rather than a stale figure from the stream
-  -- that just stopped, and must re-probe commandExists/fileExists rather
-  -- than trust a status from before close.
-  gpu.nvidia, gpu.intel = nil, nil
-  gpu_available.nvidia, gpu_available.intel = false, false
 end
 
 -- Ticked once a second while the panel is open, but ONLY once opted in via
@@ -565,7 +486,14 @@ function update()
 end
 
 function onOpen()
-  start_streams()
+  is_open = true
+  -- No start_streams() call here any more -- the widget owns the GPU
+  -- streams for the whole session now (see the long comment on `gpu` near
+  -- the top of this file), so opening this panel neither starts nor
+  -- restarts anything; gpu.nvidia/gpu.intel/gpu_available were already
+  -- seeded at script load and kept current by the watch callbacks the
+  -- whole time this panel was closed, exactly like a non-owner widget
+  -- instance on the other monitor.
   refresh_disk()
   -- Opts this panel into the host's 1s tick timer so update() above keeps
   -- firing while the panel stays open -- without this call update() runs
@@ -576,10 +504,19 @@ function onOpen()
   render()
 end
 function onClose()
-  stop_streams()
-  -- Wipe the baseline, not just stop ticking: a reopened panel must seed a
-  -- fresh sample rather than diff against a total from before the panel
-  -- was closed, which could span minutes and read as a stale average
+  is_open = false
+  -- No stop_streams() call here any more -- see onOpen. Closing this panel
+  -- must not stop the GPU streams: they belong to the widget's bar-graph
+  -- for the whole session, not to this panel's lifetime, and the widget on
+  -- this monitor may or may not even be the current stream owner. gpu.*/
+  -- gpu_available are also deliberately left as-is (not wiped) -- a
+  -- reopened panel should show the last-known reading immediately, sourced
+  -- from state, rather than a manufactured "no data yet" it would have to
+  -- wait out again.
+  --
+  -- Wipe the CPU baseline, not just stop ticking: a reopened panel must
+  -- seed a fresh sample rather than diff against a total from before the
+  -- panel was closed, which could span minutes and read as a stale average
   -- rather than current load.
   cpu_prev_total, cpu_prev_idle = 0, 0
   cpu_pct = nil
@@ -593,4 +530,6 @@ function onClose()
   panel.setWantsSecondTicks(false)
   panel.close()
 end
-function onExit(signal, reason) stop_streams() end
+-- No onExit() any more: this panel owns no streams (or anything else) that
+-- needs teardown on reload/stop -- see widget.luau's onExit for where that
+-- responsibility now lives.
