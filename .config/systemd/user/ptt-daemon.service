@@ -1,0 +1,17 @@
+[Unit]
+Description=Push-to-talk for the Keychron K8 Max (F19 hold-to-talk)
+Documentation=file:///home/cadrianmae/scripts/ptt/ptt-daemon.c
+# wpctl needs the PipeWire session to be up before the first PTT press.
+After=wireplumber.service
+Wants=wireplumber.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/libexec/ptt-daemon
+Restart=on-failure
+RestartSec=2s
+# The daemon mutes on SIGTERM, so give it a moment to do so before SIGKILL.
+TimeoutStopSec=5s
+
+[Install]
+WantedBy=default.target

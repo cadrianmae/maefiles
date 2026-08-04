@@ -1,0 +1,39 @@
+# ptt-daemon — push-to-talk for the Keychron K8 Max.
+# Run `just` (no args) for the menu.
+
+set shell := ["bash", "-eu", "-c"]
+
+_prefix := env_var('HOME') + '/.local/libexec'
+_cflags := "-O2 -Wall -Wextra -std=c11"
+
+# Default: show available recipes.
+default:
+    @just --list --unsorted
+
+# Compile the daemon into the source directory.
+build:
+    cc {{ _cflags }} $(pkg-config --cflags libudev) ptt-daemon.c \
+        $(pkg-config --libs libudev) -o ptt-daemon
+
+# Build, install to ~/.local/libexec, and restart the service.
+install: build
+    install -Dm755 ptt-daemon {{ _prefix }}/ptt-daemon
+    systemctl --user restart ptt-daemon.service
+    @echo "[OK] installed and restarted"
+
+# Remove the locally built binary (leaves the installed one alone).
+clean:
+    rm -f ptt-daemon
+
+# Is the service up, and which keyboard nodes did it find?
+status:
+    @systemctl --user is-active ptt-daemon.service
+    @journalctl --user -u ptt-daemon.service -n 20 --no-pager -o cat
+
+# Follow the log — hold F19 and watch for "PTT down" / "PTT up".
+logs:
+    journalctl --user -u ptt-daemon.service -f -o cat
+
+# Current mute state of the source the daemon drives.
+mic:
+    wpctl get-volume @DEFAULT_AUDIO_SOURCE@

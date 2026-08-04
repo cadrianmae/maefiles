@@ -32,3 +32,7 @@ bin/wokwi-cli
 
 # Agent scratch: subagent-driven-development ledgers, briefs, reports
 .superpowers/
+
+# Compiled ptt-daemon binary; source is tracked, build output is not
+# (mirrors ~/.local/libexec/, which is untracked by the same logic).
+scripts/ptt/ptt-daemon
