@@ -1,0 +1,19 @@
+# evdev read access for ptt-daemon (see ptt-daemon.c).
+#
+# niri binds fire on key press only, so push-to-talk has to read the key
+# release straight from the input node. Install with `just udev-install`.
+#
+# Scoped to Keychron devices deliberately: the built-in laptop keyboard stays
+# unreadable, which joining the `input` group would not achieve. Note that
+# anything running as this user can read the Keychron's keystrokes -- that is
+# inherent to push-to-talk by listening, not an oversight.
+#
+# Kept separate from 99-keychron.rules, which grants hidraw access for the
+# Keychron Launcher (WebHID) and is a different concern.
+
+KERNEL=="event*", SUBSYSTEM=="input", ATTRS{idVendor}=="3434", MODE="0640", GROUP="cadrianmae", TAG+="uaccess"
+
+# Same again for the Bluetooth connection, which has no USB parent to match
+# idVendor against, so match on the device name instead. Untested: only
+# exercised once the K8 Max is paired over Bluetooth.
+KERNEL=="event*", SUBSYSTEM=="input", ATTRS{name}=="Keychron*", MODE="0640", GROUP="cadrianmae", TAG+="uaccess"

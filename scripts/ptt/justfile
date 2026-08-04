@@ -21,6 +21,38 @@ install: build
     systemctl --user restart ptt-daemon.service
     @echo "[OK] installed and restarted"
 
+# Install the udev rule granting evdev read access, then reload udev.
+# Needs root, prompting graphically via ksshaskpass. Idempotent: safe to rerun.
+udev-install:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export SUDO_ASKPASS=/usr/bin/ksshaskpass
+    sudo -A install -Dm644 99-keychron-ptt.rules /etc/udev/rules.d/99-keychron-ptt.rules
+    sudo -A udevadm control --reload-rules
+    sudo -A udevadm trigger --subsystem-match=input
+    echo "[OK] rule installed; checking access"
+    just udev-check
+
+# Can this user read the Keychron nodes (and, correctly, nothing else)?
+udev-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    found=0
+    for dev in /dev/input/event*; do
+        name=$(cat "/sys/class/input/$(basename "$dev")/device/name" 2>/dev/null || true)
+        case "$name" in
+            *Keychron*)
+                found=1
+                if [[ -r "$dev" ]]; then
+                    echo "[OK]   $dev readable  ($name)"
+                else
+                    echo "[FAIL] $dev NOT readable ($name)"
+                fi
+                ;;
+        esac
+    done
+    [[ $found -eq 1 ]] || echo "[WARN] no Keychron input nodes present"
+
 # Remove the locally built binary (leaves the installed one alone).
 clean:
     rm -f ptt-daemon
