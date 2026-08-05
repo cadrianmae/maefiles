@@ -138,9 +138,30 @@ console = Console()
 #   Uploaded 459 | Failed 3 | Skipped 4452 | Queued 3195
 
 RE_PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s+(.+?)\s+\(([\d.]+\s*[KMGT]?i?B)\)\s*$")
-RE_COUNTERS = re.compile(
-    r"Uploaded\s+(\d+)\s*\|\s*Failed\s+(\d+)\s*\|\s*Skipped\s+(\d+)\s*\|\s*Queued\s+(\d+)"
-)
+
+# Fields are omitted when zero. transferSummary.ts:44 builds the line as
+# ["Uploaded n"], pushes "Failed n" only if failures exist and "Skipped n" only
+# if skips exist, then always "Queued n". So a fresh directory prints just
+# "Uploaded 0 | Queued 383". Requiring all four fields matched nothing until a
+# directory happened to have both skips and failures.
+RE_COUNT_LINE = re.compile(r"\b(?:Uploaded|Downloaded)\s+\d+\b.*\bQueued\s+\d+\b")
+RE_FIELD = {
+    "uploaded": re.compile(r"\b(?:Uploaded|Downloaded)\s+(\d+)\b"),
+    "failed": re.compile(r"\bFailed\s+(\d+)\b"),
+    "skipped": re.compile(r"\bSkipped\s+(\d+)\b"),
+    "queued": re.compile(r"\bQueued\s+(\d+)\b"),
+}
+
+
+def parse_counters(line: str) -> dict[str, int] | None:
+    """Pull the counter fields out of a progress line, absent meaning zero."""
+    if not RE_COUNT_LINE.search(line):
+        return None
+    out = {}
+    for key, rx in RE_FIELD.items():
+        m = rx.search(line)
+        out[key] = int(m.group(1)) if m else 0
+    return out
 RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a]*\a")
 
 
@@ -646,9 +667,11 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
                     line = strip_ansi(line).strip()
                     if not line:
                         continue
-                    if mc := RE_COUNTERS.search(line):
-                        (state.uploaded, state.failed,
-                         state.skipped, state.queued) = (int(x) for x in mc.groups())
+                    if (c := parse_counters(line)) is not None:
+                        state.uploaded = c["uploaded"]
+                        state.failed = c["failed"]
+                        state.skipped = c["skipped"]
+                        state.queued = c["queued"]
                         overall.update(
                             t_overall, total=state.total, completed=state.done
                         )
