@@ -1,828 +1,1108 @@
-#!/usr/bin/env bash
-# Back up $HOME to Proton Drive, minus launcher caches and re-downloadable game data.
-#
-# Two kinds of data, handled differently:
-#
-#   PLAIN   Large, already-compressed media. Uploaded as files so Proton can
-#           resume per-file and you can restore one photo without unpacking 90G.
-#           Compression measured at 1.4-3.6% here, so archiving is pure overhead.
-#
-#   ARCHIVE Everything else: configs, dotfiles, code, documents, saves. Thousands
-#           of small files that compress 10-87%. Bundled into split tar.zst so
-#           the upload is a handful of 2G parts rather than a million tiny PUTs.
-#
-#   home-backup stage      build archives into ~/backup-staging
-#   home-backup upload     push staging + plain dirs to Proton Drive
-#   home-backup verify     checksum-compare the plain dirs via rclone
-#   home-backup status     what exists locally and remotely
-#   home-backup logs       past runs + files that never reached the remote
-#   home-backup eta        live throughput + finish time (safe during an upload)
-#   home-backup --dry-run <cmd>
-#
-# Safe to interrupt and re-run: archives are skipped if already built, and
-# uploads skip files whose content already matches.
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["rich", "pexpect"]
+# ///
+"""Back up $HOME to Proton Drive.
 
-set -uo pipefail
+Two kinds of data, handled differently:
 
-readonly STAGING="$HOME/backup-staging"
-readonly REMOTE_ROOT="/my-files"
-readonly REMOTE_NAME="backup-2026-08-03"
-readonly REMOTE="$REMOTE_ROOT/$REMOTE_NAME"
-readonly PD="$HOME/.local/bin/proton-drive"
-readonly SPLIT_SIZE="2G"
-readonly LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/home-backup"
-readonly FAILURES="$LOG_DIR/failures.tsv"
-LOG=""   # set per run by open_log
+  PLAIN    Large, already-compressed media. Uploaded as files so Proton can
+           resume per-file and one photo can be restored without unpacking
+           90G. Compression measured 1.4-3.6% here, so archiving is overhead.
 
-# Uploaded as files, not archived. Already-compressed media.
-readonly -a PLAIN_DIRS=(
-    Pictures
-    Videos
-    Music
-    Games
-    Downloads
+  ARCHIVE  Everything else: configs, dotfiles, code, documents, saves.
+           Thousands of small files compressing 10-87%. Bundled into split
+           tar.zst so the upload is a handful of 2G parts, not a million PUTs.
+
+    home-backup stage      build archives into ~/backup-staging
+    home-backup upload     push staging + plain dirs to Proton Drive
+    home-backup verify     name every local file missing from the remote
+    home-backup status     what exists locally and remotely
+    home-backup logs       past runs, and files that never reached the remote
+    home-backup eta        throughput and finish time
+
+Safe to interrupt and re-run: archives are skipped if already built, and
+uploads skip files whose content already matches.
+
+Why this is Python rather than the earlier bash
+-----------------------------------------------
+proton-drive does not print lines. It redraws a block by counting the lines it
+wrote, moving the cursor up that many times, and clearing each. That count
+depends on the exact terminal width, so anything between it and the terminal
+that changes line lengths makes it erase the wrong lines and the screen goes
+blank. Three filters were tried in bash and all three failed: tee killed its
+isatty check, awk buffered past \\r, and a clipper broke the cursor arithmetic.
+
+So its output is never relayed. The CLI runs on its own pty, every byte is
+consumed here, and the display is rendered from parsed values.
+
+The CLI still does the work: transfer, encryption, auth, per-file resume.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import pexpect
+from rich.console import Console, Group
+from rich.live import Live
+from rich.panel import Panel
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TaskProgressColumn,
+    TextColumn,
+    TimeRemainingColumn,
 )
+from rich.table import Table
+from rich.text import Text
 
-# Never backed up. Every one is regenerated automatically by the tool that owns
-# it — nothing here is your data.
-readonly -a EXCLUDES=(
+# --- configuration -----------------------------------------------------------
+
+HOME = Path.home()
+PD = HOME / ".local/bin/proton-drive"
+STAGING = HOME / "backup-staging"
+REMOTE_ROOT = "/my-files"
+REMOTE_NAME = "backup-2026-08-03"
+REMOTE = f"{REMOTE_ROOT}/{REMOTE_NAME}"
+
+SPLIT_SIZE = "2G"
+PART_PREFIX = "home.tar.zst.part-"
+# Written only after the archive is read back and counted. Its absence means
+# the parts may be a truncated tar stream that would restore silently wrong.
+COMPLETE_MARKER = STAGING / ".archive-complete"
+
+PLAIN_DIRS = ["Pictures", "Videos", "Music", "Games", "Downloads"]
+
+# Never backed up. Every one is regenerated by the tool that owns it.
+EXCLUDES = [
     # Re-downloadable from Steam. Saves (userdata) and Windows-game prefixes
-    # (compatdata) are NOT here, and are backed up.
-    ".local/share/Steam/steamapps/common"
-    ".local/share/Steam/steamapps/shadercache"
+    # (compatdata) are NOT here and ARE backed up.
+    ".local/share/Steam/steamapps/common",
+    ".local/share/Steam/steamapps/shadercache",
     # Launcher-managed. PrismLauncher *instances*, including all 29 worlds,
-    # are a different directory and are backed up.
-    ".local/share/PrismLauncher/assets"
-    ".local/share/PrismLauncher/cache"
-    ".local/share/PrismLauncher/libraries"
-    ".local/share/lutris/runners"
-    ".local/share/lutris/runtime"
-    # OSTree object store, rebuilt from flathub. App *data* in .var/app/*/
-    # is kept; only the per-app caches are dropped.
-    ".local/share/flatpak/repo"
-    ".var/app/*/cache"
+    # live elsewhere and are backed up.
+    ".local/share/PrismLauncher/assets",
+    ".local/share/PrismLauncher/cache",
+    ".local/share/PrismLauncher/libraries",
+    ".local/share/lutris/runners",
+    ".local/share/lutris/runtime",
+    # OSTree object store, rebuilt from flathub. App *data* in .var/app/* is
+    # kept; only the per-app caches are dropped.
+    ".local/share/flatpak/repo",
+    ".var/app/*/cache",
     # Regenerates by definition.
-    ".cache"
-    ".local/share/Trash"
+    ".cache",
+    ".local/share/Trash",
     # Would archive its own output.
-    "backup-staging"
+    "backup-staging",
+]
+
+LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "home-backup"
+FAILURES = LOG_DIR / "failures.tsv"
+
+# The CLI hangs for minutes at a time and then resumes by itself. Measured on
+# 2026-08-05: 14 KB/s across 2 connections while hung, 501 KB/s across 8 once
+# it recovered, with no error raised either way. A 180s threshold fired at
+# 331s on a hang that cleared on its own, so this only warns well past the
+# point where recovery is still plausible.
+STALL_SECONDS = 900
+# Long enough to be worth saying something, short enough to notice.
+STALL_NOTICE_SECONDS = 240
+
+# Listing is read-only, so unlike uploading it is safe to run concurrently.
+# One call per folder at ~0.9s serial makes verify a 3-hour job; this is the
+# single biggest cost in the tool.
+LIST_WORKERS = 8
+
+console = Console()
+
+# --- CLI output parsing -------------------------------------------------------
+# Two lines carry everything, both stable across every observed run:
+#
+#   ⠋ 83.27% Lightroom Catalog-v10.lrcat.zip (23.90 MiB)
+#   Uploaded 459 | Failed 3 | Skipped 4452 | Queued 3195
+
+RE_PROGRESS = re.compile(r"(\d+(?:\.\d+)?)%\s+(.+?)\s+\(([\d.]+\s*[KMGT]?i?B)\)\s*$")
+RE_COUNTERS = re.compile(
+    r"Uploaded\s+(\d+)\s*\|\s*Failed\s+(\d+)\s*\|\s*Skipped\s+(\d+)\s*\|\s*Queued\s+(\d+)"
 )
+RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a]*\a")
 
-DRY_RUN=0
-
-# --- interrupt handling ------------------------------------------------------
-# Ctrl-C during a multi-hour transfer must leave you knowing exactly where you
-# stand, not just a dead prompt. Background helpers are tracked so none are
-# orphaned, and each phase reports its own resume story.
-
-CHILD_PIDS=()
-CURRENT_PHASE=""
-
-track_child() { CHILD_PIDS+=("$1"); }
-
-reap_children() {
-    local p
-    for p in "${CHILD_PIDS[@]:-}"; do
-        [[ -n "$p" ]] || continue
-        kill "$p" 2>/dev/null
-        # Give it a moment, then insist.
-        ( sleep 2; kill -9 "$p" 2>/dev/null ) &
-    done
-    CHILD_PIDS=()
-    [[ -n "${TRUNC_PL:-}" ]] && rm -f "$TRUNC_PL"
-    return 0
-}
-
-# --- terminal width -----------------------------------------------------------
-# The CLI prints full paths and does not clip them, so deep trees wrap and the
-# display turns to noise. Clipping has to happen downstream, but naively piping
-# the CLI is what broke this before: it stops believing it is interactive and
-# goes silent. `script` fixes that by giving it a real pty, and the pipe then
-# sits AFTER the pty, so isatty() still reports true (verified).
-#
-# awk was the previous attempt and failed because its line buffering holds back
-# \r-terminated frames until a newline arrives — which for a progress spinner is
-# never. This does its own buffering, flushing on every \r as well as \n.
-TRUNC_PL=""
-
-term_cols() { tput cols 2>/dev/null || echo "${COLUMNS:-100}"; }
-term_rows() { tput lines 2>/dev/null || echo 40; }
-
-# Counting with a glob rather than `ls | wc -l` so a filename containing a
-# newline cannot inflate the count.
-part_count() {
-    local a=("$STAGING"/home.tar.zst.part-*)
-    [[ -e ${a[0]} ]] && printf '%d' "${#a[@]}" || printf '0'
-}
-
-make_truncator() {
-    TRUNC_PL=$(mktemp "${TMPDIR:-/tmp}/home-backup-trunc.XXXXXX")
-    cat > "$TRUNC_PL" <<'PERL'
-use strict; use warnings;
-use Encode qw(decode_utf8 encode_utf8);
-# Raw bytes plus sysread: read() blocks until it has the FULL length asked for,
-# which withholds every spinner frame until a kilobyte piles up. sysread returns
-# whatever has arrived. Decoding happens per-segment, by which point the segment
-# is whole, so no multi-byte character is ever split across a decode.
-binmode(STDIN, ':raw'); binmode(STDOUT, ':raw');
-$| = 1;
-my $cols = $ENV{TRUNC_COLS} || 80;
-sub trunc {
-    my ($s) = @_;
-    my ($out, $w, $cut) = ('', 0, 0);
-    while (length $s) {
-        # Escape sequences occupy no columns, so pass them through uncounted.
-        if ($s =~ s/^(\e\[[0-9;?]*[a-zA-Z])//) { $out .= $1; next; }
-        if ($s =~ s/^(\e\][^\a]*\a)//)         { $out .= $1; next; }
-        $s =~ s/^(.)//s;
-        if ($w >= $cols) { $cut = 1; last; }
-        $out .= $1; $w++;
-    }
-    $out .= "\e[0m" if $cut;   # a dropped reset would leak colour onward
-    return $out;
-}
-my $buf = '';
-while (sysread(STDIN, my $chunk, 4096)) {
-    $buf .= $chunk;
-    # \e[K clears whatever the previous, longer frame left on the line.
-    while ($buf =~ s/^(.*?)([\r\n])//s) {
-        print encode_utf8(trunc(decode_utf8($1))), "\e[K", $2;
-    }
-}
-print encode_utf8(trunc(decode_utf8($buf))) if length $buf;
-PERL
-}
-
-on_interrupt() {
-    trap '' INT TERM          # a second Ctrl-C must not re-enter this
-    printf '\n\n\033[33mInterrupted.\033[0m\n'
-    reap_children
-
-    case "$CURRENT_PHASE" in
-        stage)
-            printf '  The archive is INCOMPLETE and no completion marker was written.\n'
-            printf '  Partial parts remain in %s for inspection.\n' "$STAGING"
-            printf '  Re-running home-backup stage discards them and starts over —\n'
-            printf '  there is no safe way to resume a half-written tar stream.\n'
-            ;;
-        upload)
-            printf '  Upload stopped. Nothing is corrupted: the CLI only publishes\n'
-            printf '  complete files, so no truncated part can be left behind.\n\n'
-            local n
-            n=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
-                | jq '[.[] | select(.name.ok)
-                           | select(.name.value | startswith("home.tar.zst.part-"))]
-                      | length')
-            printf '  %s of 50 parts are on the remote.\n' "${n:-?}"
-            printf '  Re-run home-backup upload to continue from there.\n'
-            ;;
-        *)
-            printf '  Nothing was modified.\n'
-            ;;
-    esac
-
-    printf '\n'
-    exit 130                  # 128 + SIGINT, the shell convention
-}
-
-trap on_interrupt INT TERM
-trap 'reap_children' EXIT
-
-die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
-say() { printf '\033[1m%s\033[0m\n' "$*"; }
-run() { if (( DRY_RUN )); then printf '  [dry-run] %s\n' "$*"; else eval "$*"; fi; }
-human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
-
-# --- logging -----------------------------------------------------------------
-# The CLI reports failure COUNTS but never filenames, so a transcript alone
-# cannot tell you what went wrong. Two mechanisms: a full transcript for
-# forensics, and a per-directory reconciliation that names the missing files.
-
-open_log() {
-    mkdir -p "$LOG_DIR"
-    LOG="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-$1.log"
-    {
-        printf '=== home-backup %s ===\n' "$1"
-        printf 'started:  %s\n' "$(date -Is)"
-        printf 'host:     %s\n' "$(hostname)"
-        printf 'remote:   %s\n' "$REMOTE"
-        printf 'iface:    %s\n\n' "$(net_iface)"
-    } > "$LOG"
-    printf '  log: %s\n' "$LOG"
-}
-
-logline() { [[ -n "$LOG" ]] && printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
-
-# Strip ANSI and carriage returns so the log is greppable rather than a mess of
-# spinner frames.
-log_filter() { sed -u 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\r/\n/g' | grep -v '^\s*$'; }
-
-
-# `filesystem list` is NOT recursive, and rclone's protondrive remote is broken
-# (stale 2FA), so recursion has to be done by hand. Emits paths relative to the
-# directory given, matching `find -printf '%P'`.
-#
-# Reads --json, not the human-readable output. The previous version classified
-# nodes by grepping for 🗂️/📄 and extracted names with `awk '{print $NF}'`,
-# which lost every name containing a space and misread any name containing
-# either emoji. Fields are NUL-delimited so names with tabs or newlines survive.
-remote_walk() {
-    local base="$1" prefix="${2:-}" type name esc
-    while IFS= read -r -d '' type && IFS= read -r -d '' name; do
-        [[ -n "$name" ]] || continue
-        case "$type" in
-            folder)
-                esc=${name//\//\\/}   # remote paths escape / inside node names
-                remote_walk "$base/$esc" "${prefix}${name}/"
-                ;;
-            file)
-                printf '%s%s\n' "$prefix" "$name"
-                ;;
-            unnamed)
-                # Name could not be decrypted; the node exists but we cannot
-                # match it against a local path. Surface it rather than drop it.
-                printf 'WARN: undecryptable node name under %s (uid %s)\n' \
-                    "$base" "$name" >&2
-                ;;
-        esac
-    done < <("$PD" filesystem list --json "$base" 2>/dev/null | jq -j '
-        .[] | (if .name.ok
-                then .type + "\u0000" + .name.value
-                else "unnamed\u0000" + .uid
-               end) + "\u0000"')
-}
-
-# Definitive answer to "what failed": compare local filenames against remote.
-# The CLI reports failure counts without filenames, so we ask the filesystem.
-reconcile_dir() {
-    local d="$1" localdir="$HOME/$1" remotedir="$REMOTE/$1"
-    local lf rf missing n
-
-    printf '    reconciling (walking remote tree, this takes a moment)...\n'
-    lf=$(mktemp); rf=$(mktemp)
-    ( cd "$localdir" 2>/dev/null && find . -type f -printf '%P\n' 2>/dev/null ) | sort > "$lf"
-    remote_walk "$remotedir" | sort > "$rf"
-
-    missing=$(comm -23 "$lf" "$rf")
-    n=$(grep -c . <<<"$missing")
-
-    if (( n == 0 )); then
-        printf '    \033[32mreconciled: all %d files present\033[0m\n' "$(wc -l < "$lf")"
-        logline "RECONCILE $d: OK, $(wc -l < "$lf") files"
-    else
-        printf '    \033[33mreconcile: %d of %d files NOT on remote\033[0m (logged)\n' \
-            "$n" "$(wc -l < "$lf")"
-        logline "RECONCILE $d: $n MISSING of $(wc -l < "$lf")"
-        while IFS= read -r f; do
-            [[ -n "$f" ]] || continue
-            local why="unknown"
-            [[ -L "$localdir/$f" && ! -e "$localdir/$f" ]] && why="broken symlink"
-            [[ -f "$localdir/$f" && ! -s "$localdir/$f" ]] && why="zero bytes"
-            [[ -e "$localdir/$f" && ! -r "$localdir/$f" ]] && why="unreadable"
-            printf '%s\t%s\t%s/%s\t%s\n' "$(date -Is)" "$d" "$d" "$f" "$why" >> "$FAILURES"
-            logline "  MISSING [$why] $d/$f"
-        done <<<"$missing"
-    fi
-    rm -f "$lf" "$rf"
-}
-
-# Interface carrying the default route. Not hardcoded — wifi and ethernet swap.
-net_iface() { ip route show default 2>/dev/null | awk '/default/{print $5; exit}'; }
-tx_bytes()  { local i; i=$(net_iface); [[ -n "$i" ]] && cat "/sys/class/net/$i/statistics/tx_bytes" 2>/dev/null || echo 0; }
-
-fmt_dur() {
-    local s=$1
-    (( s < 0 )) && { printf '?'; return; }
-    printf '%dh%02dm' $(( s/3600 )) $(( (s%3600)/60 ))
-}
-
-# Bytes already on the remote. A resumed run must not count them as work left,
-# or the ETA is wildly pessimistic.
-# Exact bytes, from --json. The old version parsed the human-readable column
-# ("1.4 GiB"), so every file was rounded before being summed; measured drift
-# across the 50 archive parts was ~9.6 MB. Small, but the awk also depended on
-# the size sitting at a fixed offset from the end of the line, which broke on
-# any filename containing spaces.
-remote_bytes() {
-    "$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
-        | jq '[.[].totalStorageSize // 0] | add // 0'
-}
-
-# Everything this run intends to put on the remote.
-planned_bytes() {
-    local t=0 s d
-    s=$(du -sb "$STAGING" 2>/dev/null | cut -f1); t=$(( t + ${s:-0} ))
-    for d in "${PLAIN_DIRS[@]}"; do
-        s=$(du -sb "$HOME/$d" 2>/dev/null | cut -f1); t=$(( t + ${s:-0} ))
-    done
-    echo "$t"
-}
-
-# Emitted as an array because a string would need word splitting to become
-# separate tar arguments, and that breaks on any excluded path with a space.
-TAR_EXCLUDES=()
-build_tar_excludes() {
-    TAR_EXCLUDES=()
-    local e
-    for e in "${EXCLUDES[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
-    for e in "${PLAIN_DIRS[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
-}
-
-# --- stage -------------------------------------------------------------------
-
-cmd_stage() {
-    CURRENT_PHASE=stage
-    open_log stage
-    command -v zstd >/dev/null || die "zstd is required"
-    mkdir -p "$STAGING"
-
-    say "Building archive of \$HOME (excluding plain dirs and caches)"
-    printf '  excluding %d paths\n' "$(( ${#EXCLUDES[@]} + ${#PLAIN_DIRS[@]} ))"
-
-    # Completeness is tracked by an explicit marker, NOT by the parts existing.
-    # An interrupted run leaves valid-looking parts behind; trusting their
-    # presence would silently ship a truncated backup.
-    local marker="$STAGING/.archive-complete"
-
-    if [[ -f "$marker" ]]; then
-        printf '  already built and verified complete:\n'
-        sed 's/^/    /' "$marker"
-        printf '  delete %s to rebuild\n' "$marker"
-    else
-        if compgen -G "$STAGING/home.tar.zst.part-*" >/dev/null; then
-            printf '  \033[33mfound INCOMPLETE parts from an interrupted run — discarding\033[0m\n'
-            printf '    %s across %d parts\n' \
-                "$(du -sch "$STAGING"/home.tar.zst.part-* 2>/dev/null | tail -1 | cut -f1)" \
-                "$(part_count)"
-            run "rm -f '$STAGING'/home.tar.zst.part-*"
-        fi
-
-        # --ignore-failed-read: sockets and files that vanish mid-run must not
-        # abort a multi-hour archive.
-        # PIPESTATUS is checked because a failure in tar or zstd is invisible
-        # otherwise — split succeeds happily on a truncated stream.
-        if (( DRY_RUN )); then
-            run "tar -cf - ... | zstd -3 -T0 | split -b '$SPLIT_SIZE' - '$STAGING/home.tar.zst.part-'"
-        else
-            # Without this the terminal sits silent for hours with no way to
-            # tell progress from a hang. Reports staged size and rate every 15s.
-            local start_ts; start_ts=$(date +%s)
-            (
-                while sleep 15; do
-                    local now sz el rate
-                    now=$(date +%s)
-                    sz=$(du -sb "$STAGING" 2>/dev/null | cut -f1); sz=${sz:-0}
-                    el=$(( now - start_ts )); (( el < 1 )) && el=1
-                    rate=$(( sz / el / 1048576 ))
-                    printf '\r  \033[2K%s staged | %d parts | %02d:%02d:%02d elapsed | %d MB/s' \
-                        "$(numfmt --to=iec "$sz")" \
-                        "$(part_count)" \
-                        $(( el/3600 )) $(( (el%3600)/60 )) $(( el%60 )) "$rate"
-                done
-            ) &
-            local progress_pid=$!
-            track_child "$progress_pid"
-
-            build_tar_excludes
-            set -o pipefail
-            tar -cf - -C "$HOME" --ignore-failed-read --warning=no-file-changed \
-                "${TAR_EXCLUDES[@]}" . \
-                | zstd -3 -T0 \
-                | split -b "$SPLIT_SIZE" - "$STAGING/home.tar.zst.part-"
-            local rc=$?
-            set +o pipefail
-
-            kill "$progress_pid" 2>/dev/null
-            CHILD_PIDS=()
-            printf '\n'
-
-            if (( rc != 0 )); then
-                printf '  \033[31marchive FAILED (exit %d) — parts left for inspection, no marker written\033[0m\n' "$rc"
-                printf '  re-run home-backup stage to start over\n'
-                return 1
-            fi
-
-            # Prove the stream actually terminates before declaring success.
-            printf '  verifying archive integrity (reads it back)...\n'
-            local entries
-            entries=$(cat "$STAGING"/home.tar.zst.part-* | zstd -dc 2>/dev/null | tar -tf - 2>/dev/null | wc -l)
-            if (( entries < 100000 )); then
-                printf '  \033[31mverification FAILED: only %d entries, archive looks truncated\033[0m\n' "$entries"
-                return 1
-            fi
-            {
-                printf 'completed: %s\n' "$(date -Is)"
-                printf 'entries:   %d\n' "$entries"
-                printf 'parts:     %d\n' "$(part_count)"
-                printf 'size:      %s\n' "$(du -sch "$STAGING"/home.tar.zst.part-* | tail -1 | cut -f1)"
-            } > "$marker"
-            printf '  \033[32mverified: %d entries\033[0m\n' "$entries"
-        fi
-    fi
-
-    say "Encrypting sensitive items"
-    local kit="$HOME/reinstall-kit/2026-08-03"
-    local f="$kit/luks-header-nvme1n1p3.img"
-    if [[ ! -f "$f" ]]; then
-        printf '  skip (absent): %s\n' "${f##*/}"
-    elif [[ -f "$STAGING/${f##*/}.gpg" ]]; then
-        printf '  already done: %s\n' "${f##*/}"
-    else
-        run "gpg --batch --yes --encrypt --recipient C8ABE62412652B9E \
-             --output '$STAGING/${f##*/}.gpg' '$f'"
-    fi
-
-    say "Staging contents"
-    # shellcheck disable=SC2012  # This is a human-readable listing for display, not parsed.
-    ls -lh "$STAGING" 2>/dev/null | tail -n +2
-    printf '\n  total: %s\n' "$(du -sh "$STAGING" 2>/dev/null | cut -f1)"
-}
-
-# --- upload ------------------------------------------------------------------
-
-cmd_upload() {
-    CURRENT_PHASE=upload
-    open_log upload
-    [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
-    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
-    command -v perl >/dev/null || die "perl not found (needed to clip output to the terminal)"
-    "$PD" filesystem list "$REMOTE_ROOT" >/dev/null 2>&1 || die "Not authenticated. Run: $PD auth login"
-    make_truncator
-
-    run "'$PD' filesystem create-folder '$REMOTE_ROOT' '$REMOTE_NAME' 2>/dev/null || true"
-
-    # Live throughput + ETA. proton-drive prints nothing during a transfer, so
-    # without this a multi-hour upload is indistinguishable from a hang.
-    # Measured off the default-route interface: it counts a little non-upload
-    # traffic, but at these volumes the upload dominates.
-    if (( ! DRY_RUN )); then
-        local plan done0 tx0 t0
-        plan=$(planned_bytes)
-        done0=$(remote_bytes)
-        tx0=$(tx_bytes); t0=$(date +%s)
-        local left=$(( plan - done0 )); (( left < 0 )) && left=0
-
-        printf '  plan: %s total, %s already remote, %s to go\n\n' \
-            "$(human "$plan")" "$(human "$done0")" "$(human "$left")"
-
-        (
-            # Rolling window, NOT a cumulative average. Averaging since t0
-            # folds in all the pre-transfer startup, which pins the rate near
-            # zero and yields ETAs in the tens of thousands of hours.
-            local tx_prev=$tx0 t_prev=$t0 smooth=0
-            while sleep 60; do
-                local now tx el sent window wsecs rate eta
-                now=$(date +%s); tx=$(tx_bytes)
-                el=$(( now - t0 )); (( el < 1 )) && el=1
-                sent=$(( tx - tx0 )); (( sent < 0 )) && sent=0
-
-                window=$(( tx - tx_prev )); (( window < 0 )) && window=0
-                wsecs=$(( now - t_prev )); (( wsecs < 1 )) && wsecs=1
-                rate=$(( window / wsecs ))
-                tx_prev=$tx; t_prev=$now
-
-                # Exponential smoothing so one stalled interval does not make
-                # the ETA leap around.
-                if (( smooth == 0 )); then smooth=$rate
-                else smooth=$(( (smooth * 2 + rate) / 3 )); fi
-
-                # Below ~100 KB/s there is no meaningful transfer to project.
-                if (( smooth > 102400 )); then
-                    eta=$(( (left - sent) / smooth ))
-                    (( eta < 0 )) && eta=0
-                else
-                    eta=-1
-                fi
-                rate=$smooth
-
-                # Build every field as a plain variable first. Nesting these as
-                # command substitutions inside printf arguments hides failures:
-                # one bad expansion and the whole line silently never appears.
-                local s_sent s_left s_rate s_pct s_eta line
-                s_sent=$(human "$sent")
-                s_left=$(human "$left")
-                if (( rate > 102400 )); then
-                    s_rate=$(awk -v r="$rate" 'BEGIN{printf "%.1f MB/s", r/1048576}')
-                else
-                    s_rate="measuring..."
-                fi
-                if (( left > 0 )); then
-                    s_pct=$(( sent * 100 / left ))
-                    (( s_pct > 100 )) && s_pct=100
-                else
-                    s_pct=100
-                fi
-                if (( eta >= 0 )); then s_eta=$(fmt_dur "$eta"); else s_eta="--"; fi
-
-                line="$s_pct% | $s_rate | ETA $s_eta | $s_sent of $s_left"
-
-                # The CLI redraws its progress block with \r and cursor-up, so
-                # ANY line printed to stdout gets painted over within a second.
-                # Three places it cannot reach instead:
-                #
-                #   1. the terminal/tmux title — always visible, never scrolled
-                printf '\033]0;backup %s\007' "$line"
-                #   2. a status file, so `home-backup eta` can read it from
-                #      another terminal without re-measuring
-                printf '%s\n%s\n' "$(date +%s)" "$line" > "$LOG_DIR/.status"
-                #   3. the log, for the record
-                printf '[%s] RATE %s\n' "$(date +%H:%M:%S)" "$line" >> "$LOG"
-
-                # Occasional scrollback marker. Rare enough that being
-                # overwritten sometimes does not matter.
-                if (( el % 300 < 60 )); then
-                    printf '\n  \033[36m>> %s\033[0m\n' "$line"
-                fi
-            done
-        ) &
-        UPLOAD_PROGRESS_PID=$!
-        track_child "$UPLOAD_PROGRESS_PID"
-    fi
-
-    # Docs go up FIRST and standalone. Mid-reinstall you have no working system,
-    # so restore instructions buried inside a 105G archive are worthless — these
-    # need to be readable from the web UI or a phone.
-    say "Uploading docs (readable without unpacking anything)"
-    local kit="$HOME/reinstall-kit/2026-08-03"
-    for d in RESTORE.md CLAUDE.md README.md proton-drive-map.md; do
-        [[ -f "$kit/$d" ]] && run "'$PD' filesystem upload -c replace '$kit/$d' '$REMOTE'"
-    done
-
-    if compgen -G "$STAGING/home.tar.zst.part-*" >/dev/null \
-       && [[ ! -f "$STAGING/.archive-complete" ]]; then
-        die "Staged parts exist but the archive was never verified complete.
-Uploading it would ship a truncated backup. Run: home-backup stage"
-    fi
-
-    if compgen -G "$STAGING/*" >/dev/null; then
-        # Once every staged file is on the remote there is nothing to gain from
-        # walking them again. The CLI's skip is cheap but still one API round
-        # trip per file, and this runs on every resume.
-        local lnames rnames pending
-        lnames=$(cd "$STAGING" 2>/dev/null && { local a=(*); [[ -e ${a[0]} ]] && printf '%s\n' "${a[@]}" | sort; })
-        # --json for the same reason remote_walk uses it: awk '{print $NF}' on
-        # the human-readable output keeps only the text after the last space.
-        rnames=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
-                 | jq -r '.[] | select(.name.ok) | .name.value' | sort)
-        pending=$(comm -23 <(printf '%s\n' "$lnames") <(printf '%s\n' "$rnames") | grep -c .)
-
-        if (( pending == 0 )); then
-            say "Archive: all $(printf '%s\n' "$lnames" | grep -c .) staged files already on remote — skipping"
-            logline "STAGING complete, skipped"
-        else
-            say "Uploading archives ($pending of $(printf '%s\n' "$lnames" | grep -c .) still to go)"
-            run "'$PD' filesystem upload -f skip -d merge -t '$STAGING'/* '$REMOTE'"
-            logline "STAGING uploaded, $pending were pending"
-        fi
-    else
-        printf '  nothing staged — run: home-backup stage\n'
-    fi
-
-    local d
-    for d in "${PLAIN_DIRS[@]}"; do
-        [[ -d "$HOME/$d" ]] || continue
-        say "Uploading $d ($(du -sh "$HOME/$d" 2>/dev/null | cut -f1))"
-        logline "START $d ($(find "$HOME/$d" -type f 2>/dev/null | wc -l) files)"
-
-        # -f skip:  skip byte-identical FILES (content-addressed, so re-runs resume)
-        # -d merge: descend into folders that already exist
-        #
-        # Do NOT use -c. It sets the FOLDER strategy to skip as well, so once a
-        # directory exists on the remote the whole tree below it is skipped.
-        # That silently left Pictures/ holding one empty subfolder while the
-        # CLI reported success — 88G that looked backed up and was not.
-        if (( DRY_RUN )); then
-            run "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'"
-        else
-            # `script` gives the CLI a pty so it keeps printing filenames and
-            # per-file percentages; -a -f append and flush the typescript so
-            # `home-backup logs` can follow it.
-            #
-            # Output goes STRAIGHT to the terminal. Do not put a filter here.
-            # The CLI does not print lines — it redraws a block by counting the
-            # lines it wrote, moving the cursor up that many times and clearing
-            # each one. That count depends on the exact terminal width, so any
-            # filter that changes line lengths (clipping) or inserts escapes
-            # makes it erase the wrong lines and the display goes blank. Three
-            # attempts died here: tee (killed its isatty check), awk (buffered
-            # past \r), and a perl clipper (broke the cursor arithmetic).
-            #
-            # Long paths therefore wrap. Fixing that properly means not
-            # relaying its output at all: capture it, parse the progress and
-            # counter lines, and render our own display.
-            if [[ -n "${HOME_BACKUP_CLIP:-}" ]]; then
-                local cols rows
-                cols=$(term_cols); rows=$(term_rows)
-                script -q -e -a -f -c \
-                    "stty cols $cols rows $rows 2>/dev/null; '$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
-                    "$LOG.raw" \
-                    | TRUNC_COLS="$cols" perl "$TRUNC_PL"
-            else
-                script -q -e -a -f -c \
-                    "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
-                    "$LOG.raw"
-            fi
-        fi
-
-        # Fold the raw typescript into the readable log now the dir is done.
-        if [[ -f "$LOG.raw" ]]; then
-            { printf '\n--- %s transcript ---\n' "$d"; log_filter < "$LOG.raw"; } >> "$LOG"
-            : > "$LOG.raw"
-        fi
-        logline "END $d"
-        # The CLI's failure count has no filenames attached. This does.
-        reconcile_dir "$d"
-    done
-
-    if [[ -n "${UPLOAD_PROGRESS_PID:-}" ]]; then
-        kill "$UPLOAD_PROGRESS_PID" 2>/dev/null
-        CHILD_PIDS=()
-        printf '\n'
-    fi
-
-    say "Done. Verify with: home-backup verify"
-}
-
-# --- eta ---------------------------------------------------------------------
-# Safe to run from a second terminal while an upload is in progress.
-
-cmd_eta() {
-    [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
-    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
-
-    local plan done_b left
-    plan=$(planned_bytes)
-    done_b=$(remote_bytes)
-    left=$(( plan - done_b )); (( left < 0 )) && left=0
-
-    say "Upload progress"
-    printf '  planned    %s\n' "$(human "$plan")"
-    printf '  on remote  %s  (%d%%)\n' "$(human "$done_b")" \
-        "$(( plan > 0 ? done_b*100/plan : 0 ))"
-    printf '  remaining  %s\n\n' "$(human "$left")"
-
-    if ! pgrep -f 'proton-drive filesystem upload' >/dev/null; then
-        printf '  \033[33mno upload running\033[0m — start with: home-backup upload\n'
-        return 0
-    fi
-
-    # The running upload publishes its own figure here every 60s. Reading it is
-    # instant and matches exactly what the title bar shows, so prefer it over
-    # taking a fresh 30s sample.
-    if [[ -f "$LOG_DIR/.status" ]]; then
-        local st_ts st_line age
-        st_ts=$(head -1 "$LOG_DIR/.status" 2>/dev/null)
-        st_line=$(sed -n 2p "$LOG_DIR/.status" 2>/dev/null)
-        age=$(( $(date +%s) - ${st_ts:-0} ))
-        if (( age < 180 )) && [[ -n "$st_line" ]]; then
-            printf '  live (%ds ago): \033[36m%s\033[0m\n' "$age" "$st_line"
+
+def strip_ansi(s: str) -> str:
+    return RE_ANSI.sub("", s)
+
+
+def human(n: float) -> str:
+    for unit in ("B", "K", "M", "G", "T"):
+        if abs(n) < 1024:
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n:.1f}{unit}"
+        n /= 1024
+    return f"{n:.1f}P"
+
+
+def human_rate(bps: float | None) -> str:
+    if bps is None:
+        return "measuring..."
+    mb = bps / 1_048_576
+    return f"{mb:.2f} MB/s" if mb >= 0.01 else f"{bps / 1024:.0f} KB/s"
+
+
+def fmt_dur(seconds: float | None) -> str:
+    if seconds is None or seconds < 0:
+        return "--"
+    s = int(seconds)
+    return f"{s // 3600}h{(s % 3600) // 60:02d}m"
+
+
+# --- remote access ------------------------------------------------------------
+
+
+def pd_json(args: list[str], retries: int = 3) -> tuple[bool, list[dict]]:
+    """Run a proton-drive command with --json. Returns (succeeded, rows).
+
+    The success flag is not decoration. An earlier version returned a bare
+    list and used [] for every outcome, so a failed listing was
+    indistinguishable from an empty folder. In a parallel walk each silent
+    failure prunes a whole subtree, and every file beneath it is then reported
+    missing: 3418 false 'missing' on Pictures, all of them under one .lrdata
+    tree that was present on the remote the whole time.
+
+    Everything reads --json. The human-readable output was parsed once with
+    `awk '{print $NF}'`, which keeps only the text after the last space, so
+    every filename containing a space was reported missing.
+    """
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(
+                [str(PD), *args, "--json"],
+                capture_output=True, text=True, timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            time.sleep(1 + 2 * attempt)
+            continue
+        if out.returncode == 0:
+            body = out.stdout.strip()
+            if not body:
+                return True, []
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                time.sleep(1 + 2 * attempt)
+                continue
+            return True, (data if isinstance(data, list) else [])
+        time.sleep(1 + 2 * attempt)
+    return False, []
+
+
+def remote_escape(name: str) -> str:
+    """Remote paths escape / inside a node name with a backslash."""
+    return name.replace("/", "\\/")
+
+
+def remote_list(path: str, kind: str | None = None) -> tuple[bool, list[dict]]:
+    args = ["filesystem", "list"]
+    if kind:
+        args += ["-t", kind]
+    args.append(path)
+    return pd_json(args)
+
+
+def remote_list_rows(path: str, kind: str | None = None) -> list[dict]:
+    """Rows only, for callers where a failed listing is not load-bearing."""
+    return remote_list(path, kind)[1]
+
+
+@dataclass
+class Walk:
+    files: set[str] = field(default_factory=set)
+    unreadable: list[str] = field(default_factory=list)   # listings that failed
+    undecryptable: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not self.unreadable
+
+
+def remote_walk(base: str, progress: Progress | None = None, task=None) -> Walk:
+    """Every file under `base`, as paths relative to it.
+
+    `filesystem list` has no recursive flag, so recursion happens here. Folders
+    are fanned out across a thread pool because each call is a ~0.9s round trip
+    and a tree like Lightroom's preview cache has thousands.
+
+    Folders whose listing fails are recorded rather than skipped. A caller must
+    not conclude anything about missing files from an incomplete walk.
+    """
+    walk = Walk()
+    frontier = [(base, "")]
+
+    with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
+        while frontier:
+            results = list(pool.map(lambda fp: (fp, remote_list(fp[0])), frontier))
+            frontier = []
+            for (path, prefix), (ok, entries) in results:
+                if not ok:
+                    walk.unreadable.append(path)
+                    continue
+                for e in entries:
+                    name = e.get("name") or {}
+                    if not name.get("ok"):
+                        walk.undecryptable += 1
+                        continue
+                    value = name["value"]
+                    if e.get("type") == "folder":
+                        frontier.append(
+                            (f"{path}/{remote_escape(value)}", f"{prefix}{value}/")
+                        )
+                    elif e.get("type") == "file":
+                        walk.files.add(f"{prefix}{value}")
+            if progress is not None and task is not None:
+                progress.update(
+                    task, completed=len(walk.files),
+                    description=f"listing remote ({len(frontier)} folders queued)",
+                )
+
+    if walk.undecryptable:
+        console.print(
+            f"[yellow][WARN] {walk.undecryptable} remote node(s) had "
+            f"undecryptable names and could not be matched[/yellow]"
+        )
+    return walk
+
+
+def remote_part_count() -> int:
+    return sum(
+        1 for e in remote_list_rows(REMOTE, "file")
+        if (e.get("name") or {}).get("ok")
+        and e["name"]["value"].startswith(PART_PREFIX)
+    )
+
+
+def remote_bytes() -> int:
+    """Exact bytes at the remote root.
+
+    Sums totalStorageSize rather than parsing the human-readable column, which
+    both rounded and depended on the size sitting a fixed number of fields from
+    the end of the line.
+    """
+    return sum(
+        e.get("totalStorageSize") or 0
+        for e in remote_list_rows(REMOTE, "file")
+    )
+
+
+# --- local state --------------------------------------------------------------
+
+
+def local_parts() -> list[Path]:
+    return sorted(STAGING.glob(f"{PART_PREFIX}*"))
+
+
+def dir_bytes(path: Path) -> int:
+    total = 0
+    for root, _dirs, names in os.walk(path, onerror=lambda e: None):
+        for n in names:
+            try:
+                total += os.lstat(os.path.join(root, n)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def planned_bytes() -> int:
+    total = dir_bytes(STAGING) if STAGING.is_dir() else 0
+    for d in PLAIN_DIRS:
+        p = HOME / d
+        if p.is_dir():
+            total += dir_bytes(p)
+    return total
+
+
+# --- throughput ---------------------------------------------------------------
+
+
+class Rate:
+    """Throughput off the default route, over a rolling window.
+
+    A cumulative average was tried first and produced an ETA of 100,000 hours
+    after a slow patch, because early samples never age out.
+    """
+
+    def __init__(self, window: float = 60.0) -> None:
+        self.window = window
+        self.samples: deque[tuple[float, int]] = deque()
+        self.iface = self._default_iface()
+
+    @staticmethod
+    def _default_iface() -> str | None:
+        try:
+            with open("/proc/net/route") as fh:
+                for line in fh.readlines()[1:]:
+                    parts = line.split()
+                    if len(parts) > 1 and parts[1] == "00000000":
+                        return parts[0]
+        except OSError:
+            pass
+        return None
+
+    def _tx(self) -> int | None:
+        if not self.iface:
+            return None
+        try:
+            return int(
+                Path(f"/sys/class/net/{self.iface}/statistics/tx_bytes").read_text()
+            )
+        except (OSError, ValueError):
+            return None
+
+    def sample(self) -> None:
+        tx = self._tx()
+        if tx is None:
+            return
+        now = time.monotonic()
+        self.samples.append((now, tx))
+        while self.samples and now - self.samples[0][0] > self.window:
+            self.samples.popleft()
+
+    def bytes_per_sec(self) -> float | None:
+        if len(self.samples) < 2:
+            return None
+        (t0, b0), (t1, b1) = self.samples[0], self.samples[-1]
+        if t1 - t0 < 5:
+            return None
+        return max(0.0, (b1 - b0) / (t1 - t0))
+
+
+# --- journal ------------------------------------------------------------------
+
+
+class Connections:
+    """Count the child's established TCP connections.
+
+    Worth showing: during a hang the CLI sits on 2 connections at ~14 KB/s,
+    and on recovery it opens 8 and jumps to ~500 KB/s. The count moves before
+    the throughput does, so it is the earliest signal of which state it is in.
+
+    Sockets are matched by inode — the pid's fds give the inodes it owns, and
+    /proc/net/tcp gives the state of each. No root needed.
+    """
+
+    def __init__(self, pid: int, interval: float = 1.0) -> None:
+        self.pid = pid
+        self.interval = interval
+        self._last = 0.0
+        self._count = 0
+
+    def _inodes(self) -> set[str]:
+        found = set()
+        try:
+            for fd in os.scandir(f"/proc/{self.pid}/fd"):
+                try:
+                    target = os.readlink(fd.path)
+                except OSError:
+                    continue
+                if target.startswith("socket:["):
+                    found.add(target[8:-1])
+        except OSError:
+            pass
+        return found
+
+    def count(self) -> int:
+        now = time.monotonic()
+        if now - self._last < self.interval:
+            return self._count
+        self._last = now
+
+        mine = self._inodes()
+        if not mine:
+            self._count = 0
             return 0
-        fi
-    fi
 
-    # 30s sample. Long enough to smooth out per-file gaps in the CLI's pacing.
-    printf '  sampling throughput for 30s...\n'
-    local tx0 tx1 rate
-    tx0=$(tx_bytes); sleep 30; tx1=$(tx_bytes)
-    rate=$(( (tx1 - tx0) / 30 ))
+        total = 0
+        for proto in ("tcp", "tcp6"):
+            try:
+                lines = Path(f"/proc/net/{proto}").read_text().splitlines()[1:]
+            except OSError:
+                continue
+            for line in lines:
+                f = line.split()
+                # st == 01 is ESTABLISHED; field 9 is the socket inode.
+                if len(f) > 9 and f[3] == "01" and f[9] in mine:
+                    total += 1
+        self._count = total
+        return total
 
-    if (( rate <= 0 )); then
-        printf '  \033[33mno traffic measured — stalled, or between files\033[0m\n'
-        return 0
-    fi
 
-    printf '  rate       %.2f MB/s (%.1f Mbit/s)\n' \
-        "$(awk -v r="$rate" 'BEGIN{printf "%.2f", r/1048576}')" \
-        "$(awk -v r="$rate" 'BEGIN{printf "%.1f", r*8/1048576}')"
-    printf '  ETA        %s\n' "$(fmt_dur $(( left / rate )))"
-    printf '  finishes   ~%s\n' "$(date -d "+$(( left / rate )) seconds" '+%a %H:%M')"
-}
+class Journal:
+    """Append-only record, so a wedge stays diagnosable after the fact."""
 
-# --- logs --------------------------------------------------------------------
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.fh = path.open("a", encoding="utf-8")
 
-cmd_logs() {
-    [[ -d "$LOG_DIR" ]] || die "No logs yet — they appear once stage or upload runs."
+    def write(self, **fields) -> None:
+        fields["ts"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        self.fh.write(json.dumps(fields) + "\n")
+        self.fh.flush()
 
-    say "Runs"
-    local f
-    for f in "$LOG_DIR"/*.log; do
-        [[ -f "$f" ]] || continue
-        printf '  %-34s %7s  %s\n' "$(basename "$f")" \
-            "$(du -h "$f" | cut -f1)" \
-            "$(grep -m1 '^started:' "$f" | cut -d' ' -f2-)"
-    done
+    def close(self) -> None:
+        try:
+            self.fh.close()
+        except OSError:
+            pass
 
-    if [[ -s "$FAILURES" ]]; then
-        printf '\n'
-        say "Files that never reached the remote"
-        printf '  %-52s %s\n' "PATH" "WHY"
-        awk -F'\t' '{printf "  %-52s %s\n", substr($3,1,52), $4}' "$FAILURES" | sort -u | head -40
-        local n; n=$(sort -u "$FAILURES" | wc -l)
-        (( n > 40 )) && printf '  ... and %d more in %s\n' "$(( n - 40 ))" "$FAILURES"
-        printf '\n'
-        awk -F'\t' '{c[$4]++} END{for(w in c) printf "  %5d  %s\n", c[w], w}' "$FAILURES" | sort -rn
-    else
-        printf '\n  No failures recorded.\n'
-    fi
 
-    printf '\n  full logs: %s\n' "$LOG_DIR"
-}
+# --- upload -------------------------------------------------------------------
 
-# --- verify ------------------------------------------------------------------
 
-cmd_verify() {
-    CURRENT_PHASE=verify
-    open_log verify
+@dataclass
+class DirState:
+    name: str
+    uploaded: int = 0
+    failed: int = 0
+    skipped: int = 0
+    queued: int = 0
+    current_file: str = ""
+    current_size: str = ""
+    current_pct: float = 0.0
+    # Most files upload in one block, so 0.00% is the only percentage the CLI
+    # ever prints for them: 63,867 frames across two logs, one distinct value.
+    # A bar is only worth drawing once a real percentage has appeared.
+    saw_real_pct: bool = False
+    started: float = field(default_factory=time.monotonic)
+    last_change: float = field(default_factory=time.monotonic)
+    _fingerprint: tuple = ()
 
-    # Two levels, because they answer different questions.
+    @property
+    def total(self) -> int:
+        return self.uploaded + self.failed + self.skipped + self.queued
+
+    @property
+    def done(self) -> int:
+        return self.uploaded + self.failed + self.skipped
+
+    @property
+    def stalled_for(self) -> float:
+        return time.monotonic() - self.last_change
+
+    def note_activity(self) -> None:
+        """Reset the stall clock only when something genuinely moved.
+
+        The spinner keeps animating while wedged, so a new frame is not
+        evidence of progress. Only the counters or the percentage count.
+        """
+        fp = (
+            self.uploaded, self.failed, self.skipped,
+            self.current_pct, self.current_file,
+        )
+        if fp != self._fingerprint:
+            self._fingerprint = fp
+            self.last_change = time.monotonic()
+
+
+def _upload_panel(state: DirState, rate: Rate, overall, current, conns=None) -> Group:
+    counters = Table.grid(padding=(0, 2))
+    counters.add_row(
+        Text("uploaded", style="dim"), Text(str(state.uploaded), style="green"),
+        Text("skipped", style="dim"), Text(str(state.skipped)),
+        Text("failed", style="dim"),
+        Text(str(state.failed), style="red" if state.failed else "dim"),
+        Text("queued", style="dim"), Text(str(state.queued)),
+    )
+    n = conns.count() if conns else 0
+    status = Text.assemble(
+        ("rate  ", "dim"), (human_rate(rate.bytes_per_sec()), "cyan"),
+        ("    conns  ", "dim"),
+        # Few connections alongside a low rate is the hang signature.
+        (str(n), "yellow" if n <= 2 else "cyan"),
+    )
+
+    # Only draw the per-file bar when the CLI is actually reporting movement
+    # within the file; otherwise say what is in flight and leave it at that.
+    if state.saw_real_pct:
+        current_row = current
+    else:
+        current_row = Text.assemble(
+            ("sending  ", "dim"),
+            (state.current_file or "waiting...", "white"),
+            (f"  {state.current_size}" if state.current_size else "", "dim"),
+        )
+
+    body = [overall, current_row, counters, status]
+    if state.stalled_for > STALL_SECONDS:
+        body.append(
+            Text(
+                f"[WARN] no progress for {fmt_dur(state.stalled_for)} on "
+                f"{state.current_file or '?'} — past the point where these "
+                f"usually clear. Ctrl-C is safe; completed files are skipped.",
+                style="bold yellow",
+            )
+        )
+    elif state.stalled_for > STALL_NOTICE_SECONDS:
+        # These clear by themselves. Saying so stops a recovering transfer
+        # from being killed in the belief that it is dead.
+        body.append(
+            Text(
+                f"[INFO] paused {int(state.stalled_for)}s on "
+                f"{state.current_file or '?'} — the CLI does this and resumes "
+                f"on its own. Leave it.",
+                style="dim yellow",
+            )
+        )
+    return Group(
+        Panel(Group(*body), title=f"uploading {state.name}", border_style="blue")
+    )
+
+
+def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirState]:
+    """Run the CLI against one local path. Returns (exit status, state)."""
+    # -f skip   file conflict: content already on the remote is not re-sent
+    # -d merge  descend into folders that already exist
     #
-    #   presence  — every local file exists at the right remote path.
-    #               Always available. Names only, no content guarantee.
-    #   checksum  — contents actually match. Needs rclone, whose protondrive
-    #               backend re-authenticates with 2FA and expires periodically.
-    local have_rclone=0
-    if command -v rclone >/dev/null && rclone lsd "protondrive:" >/dev/null 2>&1; then
-        have_rclone=1
-    else
-        printf '  \033[33mrclone unavailable for protondrive\033[0m — presence check only.\n'
-        printf '  For checksum verification: rclone config reconnect protondrive:\n\n'
-    fi
+    # Do NOT use -c. It sets the FOLDER strategy too, so once a directory
+    # exists remotely the whole tree below it is skipped while the CLI still
+    # reports success. That silently left 88G unbacked-up on 2026-08-04.
+    argv = ["filesystem", "upload", "-f", "skip", "-d", "merge", str(target), REMOTE]
 
-    local d
-    for d in "${PLAIN_DIRS[@]}"; do
-        [[ -d "$HOME/$d" ]] || continue
-        say "Checking $d"
-        reconcile_dir "$d"
-        if (( have_rclone )); then
-            printf '    checksum comparison...\n'
-            run "rclone check '$HOME/$d' 'protondrive:$REMOTE_NAME/$d' --one-way 2>&1 | tail -5"
-        fi
-    done
+    state = DirState(name=label)
+    rate = Rate()
+    journal.write(event="start", target=str(target), label=label)
 
-    say "Archive parts"
-    local lp rp
-    lp=$(part_count)
-    rp=$("$PD" filesystem list -t file "$REMOTE" 2>/dev/null | grep -c 'part-')
-    printf '  local %s / remote %s  %s\n' "$lp" "$rp" \
-        "$( (( lp == rp )) && printf '\033[32mOK\033[0m' || printf '\033[31mMISMATCH\033[0m' )"
-    logline "PARTS local=$lp remote=$rp"
+    overall = Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(bar_width=None),
+        TaskProgressColumn(),
+        TextColumn("{task.completed}/{task.total} files"),
+        TimeRemainingColumn(),
+        expand=True,
+    )
+    current = Progress(
+        TextColumn("[dim]{task.description}"),
+        BarColumn(bar_width=30, complete_style="cyan"),
+        TaskProgressColumn(),
+        expand=True,
+    )
+    t_overall = overall.add_task(label, total=None)
+    t_current = current.add_task("waiting...", total=100)
 
-    printf '\n'
-    if [[ -s "$FAILURES" ]]; then
-        printf '  \033[33mSome files never reached the remote.\033[0m See: home-backup logs\n'
-    else
-        printf '  \033[32mNo missing files recorded.\033[0m\n'
-    fi
-    printf '  Re-running home-backup upload re-uploads anything whose content\n'
-    printf '  differs — the CLI skips only byte-identical files.\n'
-}
+    child = pexpect.spawn(
+        str(PD), argv,
+        encoding="utf-8", codec_errors="replace", timeout=None,
+        dimensions=(40, 200),   # its own pty; none of this reaches the screen
+    )
 
-# --- status ------------------------------------------------------------------
+    conns = Connections(child.pid)
+    buf = ""
+    try:
+        with Live(
+            _upload_panel(state, rate, overall, current, conns),
+            console=console, refresh_per_second=8,
+        ) as live:
+            while True:
+                try:
+                    chunk = child.read_nonblocking(size=4096, timeout=0.25)
+                except pexpect.TIMEOUT:
+                    chunk = ""
+                except (pexpect.EOF, OSError):
+                    break
 
-cmd_status() {
-    local total=0 s
-    say "PLAIN (uploaded as files)"
-    for d in "${PLAIN_DIRS[@]}"; do
-        s=$(du -sb "$HOME/$d" 2>/dev/null | cut -f1) || continue
-        total=$((total+s)); printf '  %-14s %s\n' "$d" "$(human "$s")"
-    done
-    printf '  %-14s %s\n\n' "subtotal" "$(human "$total")"
+                buf += chunk
+                while (m := re.search(r"[\r\n]", buf)) is not None:
+                    line, buf = buf[: m.start()], buf[m.end():]
+                    line = strip_ansi(line).strip()
+                    if not line:
+                        continue
+                    if mc := RE_COUNTERS.search(line):
+                        (state.uploaded, state.failed,
+                         state.skipped, state.queued) = (int(x) for x in mc.groups())
+                        overall.update(
+                            t_overall, total=state.total, completed=state.done
+                        )
+                    elif mp := RE_PROGRESS.search(line):
+                        pct = float(mp.group(1))
+                        if mp.group(2) != state.current_file:
+                            state.saw_real_pct = False   # new file, new verdict
+                        state.current_pct = pct
+                        state.current_file = mp.group(2)
+                        state.current_size = mp.group(3)
+                        if pct > 0:
+                            state.saw_real_pct = True
+                        current.update(
+                            t_current,
+                            description=mp.group(2)[:60],
+                            completed=pct,
+                        )
+                    state.note_activity()
 
-    say "EXCLUDED"
-    local ex=0
-    for e in "${EXCLUDES[@]}"; do
-        # shellcheck disable=SC2086  # Glob expansion is deliberate; exclude patterns contain wildcards.
-        s=$(du -sbc $HOME/$e 2>/dev/null | tail -1 | cut -f1) || continue
-        [[ -z "$s" || "$s" == 0 ]] && continue
-        ex=$((ex+s)); printf '  %-44s %s\n' "$e" "$(human "$s")"
-    done
-    printf '  %-44s %s\n\n' "subtotal" "$(human "$ex")"
+                rate.sample()
+                live.update(_upload_panel(state, rate, overall, current, conns))
+                if not child.isalive():
+                    break
+    finally:
+        if child.isalive():
+            child.terminate(force=True)
+        child.close()
 
-    local home_b; home_b=$(du -sb "$HOME" 2>/dev/null | cut -f1)
-    say "TOTALS"
-    printf '  home            %s\n' "$(human "$home_b")"
-    printf '  excluded        %s\n' "$(human "$ex")"
-    printf '  to back up      %s  (raw)\n' "$(human $((home_b-ex)))"
-    printf '  of which plain  %s\n' "$(human "$total")"
-    printf '  to archive      %s  (raw, compresses well)\n\n' "$(human $((home_b-ex-total)))"
+    journal.write(
+        event="end", label=label,
+        uploaded=state.uploaded, failed=state.failed,
+        skipped=state.skipped, queued=state.queued,
+        seconds=round(time.monotonic() - state.started, 1),
+    )
+    tag = "[OK]" if state.failed == 0 else "[WARN]"
+    console.print(
+        f"{tag} {label}: {state.uploaded} uploaded, {state.skipped} skipped, "
+        f"{state.failed} failed"
+    )
+    return (child.exitstatus or 0), state
 
-    say "STAGING"
-    [[ -d "$STAGING" ]] && du -sh "$STAGING" || printf '  not built yet\n'
-}
 
-# --- main --------------------------------------------------------------------
+def cmd_upload(args) -> int:
+    if not PD.is_file():
+        console.print(f"[red]proton-drive CLI not found at {PD}[/red]")
+        return 1
+    if not remote_list(REMOTE_ROOT)[0]:
+        console.print(f"[red]Not authenticated. Run: {PD} auth login[/red]")
+        return 1
 
-CMD="${1:-status}"
-[[ "$CMD" == "--dry-run" ]] && { DRY_RUN=1; CMD="${2:-status}"; }
-[[ "${2:-}" == "--dry-run" ]] && DRY_RUN=1
+    dirs = args.dirs or PLAIN_DIRS
+    unknown = [d for d in dirs if d not in PLAIN_DIRS]
+    if unknown:
+        console.print(f"[red]unknown directory: {', '.join(unknown)}[/red]")
+        console.print(f"known: {', '.join(PLAIN_DIRS)}")
+        return 2
 
-case "$CMD" in
-    stage)  cmd_stage ;;
-    upload) cmd_upload ;;
-    verify) cmd_verify ;;
-    status) cmd_status ;;
-    eta)    cmd_eta ;;
-    logs)   cmd_logs ;;
-    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \?//' ;;
-    *) die "Unknown command: $CMD  (stage|upload|verify|status|eta|logs)" ;;
-esac
+    journal = Journal(LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-upload.jsonl")
+    subprocess.run(
+        [str(PD), "filesystem", "create-folder", REMOTE_ROOT, REMOTE_NAME],
+        capture_output=True,
+    )
+
+    console.print(f"[bold]remote:[/bold] {REMOTE}")
+    console.print(f"[bold]dirs:[/bold]   {', '.join(dirs)}\n")
+
+    rc = 0
+    try:
+        # Archive first: it is the irreplaceable half of the backup.
+        if not args.dirs and STAGING.is_dir() and local_parts():
+            if not COMPLETE_MARKER.exists():
+                console.print(
+                    "[red]refusing to upload staging: no .archive-complete "
+                    "marker.[/red] The parts may be a truncated tar stream. "
+                    "Re-run `home-backup stage`."
+                )
+                return 1
+            staged = {p.name for p in STAGING.iterdir() if not p.name.startswith(".")}
+            on_remote = {
+                e["name"]["value"] for e in remote_list_rows(REMOTE, "file")
+                if (e.get("name") or {}).get("ok")
+            }
+            if staged - on_remote:
+                rc, _ = upload_one(STAGING, "archive", journal)
+            else:
+                console.print(
+                    f"[dim]archive: all {len(staged)} staged files already on "
+                    f"remote — skipping[/dim]"
+                )
+
+        for d in dirs:
+            local = HOME / d
+            if not local.is_dir():
+                console.print(f"[dim]skip (absent): {d}[/dim]")
+                continue
+            status, _ = upload_one(local, d, journal)
+            rc = status or rc
+    except KeyboardInterrupt:
+        console.print(
+            "\n[yellow]Interrupted.[/yellow] Nothing is corrupted: the CLI "
+            "only publishes complete files.\n"
+            f"  {remote_part_count()} of 50 archive parts are on the remote.\n"
+            "  Re-run to continue; files already uploaded are skipped."
+        )
+        journal.write(event="interrupted")
+        return 130
+    finally:
+        journal.close()
+
+    console.print(f"\n[dim]journal: {journal.path}[/dim]")
+    return rc
+
+
+# --- stage --------------------------------------------------------------------
+
+
+def cmd_stage(args) -> int:
+    if COMPLETE_MARKER.exists() and local_parts():
+        console.print(
+            f"[green][OK][/green] archive already staged: "
+            f"{len(local_parts())} parts, verified."
+        )
+        console.print("  Delete .archive-complete to force a rebuild.")
+        return 0
+
+    if local_parts():
+        console.print(
+            "[yellow][WARN][/yellow] partial parts present with no completion "
+            "marker. Re-staging discards them — there is no safe way to resume "
+            "a half-written tar stream."
+        )
+        if not args.force:
+            console.print("  Re-run with --force to start over.")
+            return 1
+        for p in local_parts():
+            p.unlink()
+
+    STAGING.mkdir(parents=True, exist_ok=True)
+    journal = Journal(LOG_DIR / f"{time.strftime('%Y%m%d-%H%M%S')}-stage.jsonl")
+
+    excludes = [f"--exclude=./{e}" for e in (*EXCLUDES, *PLAIN_DIRS)]
+    tar_cmd = [
+        "tar", "-cf", "-", "-C", str(HOME),
+        "--ignore-failed-read", "--warning=no-file-changed",
+        *excludes, ".",
+    ]
+    journal.write(event="stage_start", excludes=len(excludes))
+    console.print("[bold]Building archive[/bold] (tar | zstd -3 | split)\n")
+
+    tar = subprocess.Popen(tar_cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    zstd = subprocess.Popen(
+        ["zstd", "-3", "-T0"], stdin=tar.stdout,
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    tar.stdout.close()
+    split = subprocess.Popen(
+        ["split", "-b", SPLIT_SIZE, "-", str(STAGING / PART_PREFIX)],
+        stdin=zstd.stdout, stderr=subprocess.DEVNULL,
+    )
+    zstd.stdout.close()
+
+    progress = Progress(
+        SpinnerColumn(), TextColumn("{task.description}"),
+        TextColumn("[cyan]{task.fields[size]}"), console=console,
+    )
+    with progress:
+        task = progress.add_task("archiving", size="0B")
+        while split.poll() is None:
+            time.sleep(1)
+            progress.update(
+                task,
+                size=f"{human(sum(p.stat().st_size for p in local_parts()))} "
+                     f"in {len(local_parts())} parts",
+            )
+
+    rcs = (tar.wait(), zstd.wait(), split.wait())
+    if any(rcs):
+        console.print(f"[red]archive failed[/red] (tar/zstd/split exit {rcs})")
+        journal.write(event="stage_failed", codes=rcs)
+        journal.close()
+        return 1
+
+    # Read the archive back before trusting it. Checking that parts merely
+    # exist would have shipped a truncated 281M archive as complete.
+    console.print("\n[bold]Verifying archive[/bold] (reading every entry back)")
+    entries = 0
+    with progress:
+        task = progress.add_task("verifying", size="0 entries")
+        cat = subprocess.Popen(
+            ["cat", *[str(p) for p in local_parts()]],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        unz = subprocess.Popen(
+            ["zstd", "-d", "-c"], stdin=cat.stdout,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        )
+        cat.stdout.close()
+        lst = subprocess.Popen(
+            ["tar", "-tf", "-"], stdin=unz.stdout,
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+        )
+        unz.stdout.close()
+        for _ in lst.stdout:
+            entries += 1
+            if entries % 5000 == 0:
+                progress.update(task, size=f"{entries:,} entries")
+        vrcs = (cat.wait(), unz.wait(), lst.wait())
+
+    if any(vrcs) or entries == 0:
+        console.print(f"[red]verification FAILED[/red] (exit {vrcs}, {entries} entries)")
+        console.print("  No completion marker written. Do not upload these parts.")
+        journal.write(event="verify_failed", codes=vrcs, entries=entries)
+        journal.close()
+        return 1
+
+    COMPLETE_MARKER.write_text(f"{entries}\n")
+    console.print(f"[green][OK][/green] verified: {entries:,} entries")
+    console.print(
+        f"  {len(local_parts())} parts, "
+        f"{human(sum(p.stat().st_size for p in local_parts()))}"
+    )
+    journal.write(event="stage_done", entries=entries, parts=len(local_parts()))
+    journal.close()
+    return 0
+
+
+# --- verify -------------------------------------------------------------------
+
+
+def classify_missing(path: Path) -> str:
+    if path.is_symlink() and not path.exists():
+        return "broken symlink"
+    if path.is_file() and path.stat().st_size == 0:
+        return "zero bytes"
+    if path.exists() and not os.access(path, os.R_OK):
+        return "unreadable"
+    return "unknown"
+
+
+def cmd_verify(args) -> int:
+    dirs = args.dirs or PLAIN_DIRS
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    total_missing = 0
+
+    parts = local_parts()
+    if parts:
+        n = remote_part_count()
+        tag = "[green][OK][/green]" if n >= len(parts) else "[red][ERROR][/red]"
+        console.print(f"{tag} archive: {n} of {len(parts)} parts on the remote")
+        if not COMPLETE_MARKER.exists():
+            console.print(
+                "[yellow][WARN][/yellow] no .archive-complete marker — the "
+                "staged parts were never verified"
+            )
+
+    for d in dirs:
+        local = HOME / d
+        if not local.is_dir():
+            continue
+
+        local_files = set()
+        for root, _dirs, names in os.walk(local, onerror=lambda e: None):
+            rel = Path(root).relative_to(local)
+            for n in names:
+                local_files.add(str(rel / n) if str(rel) != "." else n)
+
+        with Progress(
+            SpinnerColumn(), TextColumn("{task.description}"),
+            TextColumn("[cyan]{task.completed} files"), console=console,
+        ) as progress:
+            task = progress.add_task(f"listing remote {d}", total=None)
+            walk = remote_walk(f"{REMOTE}/{d}", progress, task)
+
+        # An incomplete listing cannot distinguish "absent" from "not looked
+        # at", and reporting the difference anyway would send you re-uploading
+        # data that is already there.
+        if not walk.complete:
+            console.print(
+                f"[red][ERROR][/red] {d}: {len(walk.unreadable)} folder "
+                f"listing(s) failed after retries — the remote picture is "
+                f"incomplete, so nothing is reported missing for this "
+                f"directory."
+            )
+            for p in walk.unreadable[:5]:
+                console.print(f"    [dim]{p}[/dim]")
+            if len(walk.unreadable) > 5:
+                console.print(f"    [dim]... and {len(walk.unreadable) - 5} more[/dim]")
+            console.print(
+                f"    [dim]retry, or lower LIST_WORKERS (currently "
+                f"{LIST_WORKERS}) if this persists[/dim]"
+            )
+            total_missing += 1
+            continue
+
+        missing = sorted(local_files - walk.files)
+        if not missing:
+            console.print(
+                f"[green][OK][/green] {d}: all {len(local_files)} files present"
+            )
+            continue
+
+        total_missing += len(missing)
+        console.print(
+            f"[yellow][WARN][/yellow] {d}: {len(missing)} of "
+            f"{len(local_files)} files NOT on the remote"
+        )
+        with FAILURES.open("a", encoding="utf-8") as fh:
+            for rel in missing:
+                why = classify_missing(local / rel)
+                fh.write(
+                    f"{time.strftime('%Y-%m-%dT%H:%M:%S%z')}\t{d}\t{d}/{rel}\t{why}\n"
+                )
+        for rel in missing[:10]:
+            console.print(f"    {classify_missing(local / rel):<15} {rel}")
+        if len(missing) > 10:
+            console.print(f"    ... and {len(missing) - 10} more (see {FAILURES})")
+
+    return 1 if total_missing else 0
+
+
+# --- status / logs / eta ------------------------------------------------------
+
+
+def cmd_status(_args) -> int:
+    t = Table(title="home-backup status", show_header=True, header_style="bold")
+    t.add_column("item")
+    t.add_column("local", justify="right")
+    t.add_column("remote", justify="right")
+
+    parts = local_parts()
+    t.add_row(
+        "archive parts",
+        f"{len(parts)} ({human(sum(p.stat().st_size for p in parts))})",
+        str(remote_part_count()),
+    )
+    t.add_row(
+        "archive verified",
+        "yes" if COMPLETE_MARKER.exists() else "[red]NO[/red]",
+        "-",
+    )
+
+    remote_names = {
+        e["name"]["value"] for e in remote_list_rows(REMOTE, "file")
+        if (e.get("name") or {}).get("ok")
+    }
+    t.add_row("files at remote root", "-", str(len(remote_names)))
+
+    for d in PLAIN_DIRS:
+        p = HOME / d
+        if not p.is_dir():
+            continue
+        n = sum(len(f) for _r, _d, f in os.walk(p, onerror=lambda e: None))
+        t.add_row(d, f"{n} files ({human(dir_bytes(p))})", "run verify")
+
+    console.print(t)
+    console.print(f"\n[dim]remote: {REMOTE}[/dim]")
+    console.print(f"[dim]staging: {STAGING}[/dim]")
+    return 0
+
+
+def cmd_logs(args) -> int:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    journals = sorted(LOG_DIR.glob("*.jsonl"))
+    if not journals:
+        console.print("[dim]no runs recorded yet[/dim]")
+    else:
+        t = Table(title="recent runs", header_style="bold")
+        for col in ("when", "event", "label", "up", "skip", "fail", "secs"):
+            t.add_column(col)
+        for j in journals[-args.limit:]:
+            for line in j.read_text(encoding="utf-8").splitlines():
+                try:
+                    r = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if r.get("event") not in ("end", "stage_done", "interrupted"):
+                    continue
+                t.add_row(
+                    r.get("ts", "")[:19], r.get("event", ""), r.get("label", "-"),
+                    str(r.get("uploaded", "-")), str(r.get("skipped", "-")),
+                    str(r.get("failed", "-")), str(r.get("seconds", "-")),
+                )
+        console.print(t)
+
+    if FAILURES.exists() and FAILURES.stat().st_size:
+        lines = FAILURES.read_text(encoding="utf-8").splitlines()
+        console.print(f"\n[bold]files that never reached the remote[/bold] "
+                      f"({len(lines)} recorded)")
+        for line in lines[-args.limit:]:
+            cols = line.split("\t")
+            if len(cols) >= 4:
+                console.print(f"  [yellow]{cols[3]:<15}[/yellow] {cols[2]}")
+    return 0
+
+
+def cmd_eta(_args) -> int:
+    plan = planned_bytes()
+    done = remote_bytes()
+    left = max(0, plan - done)
+
+    rate = Rate()
+    with Progress(
+        SpinnerColumn(), TextColumn("sampling throughput for 10s"), console=console
+    ) as p:
+        p.add_task("", total=None)
+        for _ in range(10):
+            rate.sample()
+            time.sleep(1)
+
+    bps = rate.bytes_per_sec()
+    eta = (left / bps) if bps and bps > 0 else None
+
+    t = Table(show_header=False)
+    t.add_row("planned", human(plan))
+    t.add_row("on remote", human(done))
+    t.add_row("remaining", human(left))
+    t.add_row("rate", human_rate(bps))
+    t.add_row("ETA", fmt_dur(eta))
+    console.print(t)
+    console.print(
+        "[dim]remote figure counts the archive parts at the root only; "
+        "per-directory totals need verify.[/dim]"
+    )
+    return 0
+
+
+# --- entry point --------------------------------------------------------------
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="home-backup", description="Back up $HOME to Proton Drive."
+    )
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    p = sub.add_parser("stage", help="build archives into ~/backup-staging")
+    p.add_argument("--force", action="store_true",
+                   help="discard partial parts and start over")
+    p.set_defaults(fn=cmd_stage)
+
+    p = sub.add_parser("upload", help="push staging + plain dirs to Proton Drive")
+    p.add_argument("dirs", nargs="*", help=f"subset of: {' '.join(PLAIN_DIRS)}")
+    p.set_defaults(fn=cmd_upload)
+
+    p = sub.add_parser("verify", help="name every local file missing remotely")
+    p.add_argument("dirs", nargs="*", help=f"subset of: {' '.join(PLAIN_DIRS)}")
+    p.set_defaults(fn=cmd_verify)
+
+    p = sub.add_parser("status", help="what exists locally and remotely")
+    p.set_defaults(fn=cmd_status)
+
+    p = sub.add_parser("logs", help="past runs and unreached files")
+    p.add_argument("-n", "--limit", type=int, default=20)
+    p.set_defaults(fn=cmd_logs)
+
+    p = sub.add_parser("eta", help="throughput and finish time")
+    p.set_defaults(fn=cmd_eta)
+
+    args = parser.parse_args()
+
+    if not shutil.which("zstd") and args.cmd == "stage":
+        console.print("[red]zstd not found[/red]")
+        return 1
+
+    signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted.[/yellow] Nothing was modified.")
+        return 130
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,828 @@
+#!/usr/bin/env bash
+# Back up $HOME to Proton Drive, minus launcher caches and re-downloadable game data.
+#
+# Two kinds of data, handled differently:
+#
+#   PLAIN   Large, already-compressed media. Uploaded as files so Proton can
+#           resume per-file and you can restore one photo without unpacking 90G.
+#           Compression measured at 1.4-3.6% here, so archiving is pure overhead.
+#
+#   ARCHIVE Everything else: configs, dotfiles, code, documents, saves. Thousands
+#           of small files that compress 10-87%. Bundled into split tar.zst so
+#           the upload is a handful of 2G parts rather than a million tiny PUTs.
+#
+#   home-backup stage      build archives into ~/backup-staging
+#   home-backup upload     push staging + plain dirs to Proton Drive
+#   home-backup verify     checksum-compare the plain dirs via rclone
+#   home-backup status     what exists locally and remotely
+#   home-backup logs       past runs + files that never reached the remote
+#   home-backup eta        live throughput + finish time (safe during an upload)
+#   home-backup --dry-run <cmd>
+#
+# Safe to interrupt and re-run: archives are skipped if already built, and
+# uploads skip files whose content already matches.
+
+set -uo pipefail
+
+readonly STAGING="$HOME/backup-staging"
+readonly REMOTE_ROOT="/my-files"
+readonly REMOTE_NAME="backup-2026-08-03"
+readonly REMOTE="$REMOTE_ROOT/$REMOTE_NAME"
+readonly PD="$HOME/.local/bin/proton-drive"
+readonly SPLIT_SIZE="2G"
+readonly LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/home-backup"
+readonly FAILURES="$LOG_DIR/failures.tsv"
+LOG=""   # set per run by open_log
+
+# Uploaded as files, not archived. Already-compressed media.
+readonly -a PLAIN_DIRS=(
+    Pictures
+    Videos
+    Music
+    Games
+    Downloads
+)
+
+# Never backed up. Every one is regenerated automatically by the tool that owns
+# it — nothing here is your data.
+readonly -a EXCLUDES=(
+    # Re-downloadable from Steam. Saves (userdata) and Windows-game prefixes
+    # (compatdata) are NOT here, and are backed up.
+    ".local/share/Steam/steamapps/common"
+    ".local/share/Steam/steamapps/shadercache"
+    # Launcher-managed. PrismLauncher *instances*, including all 29 worlds,
+    # are a different directory and are backed up.
+    ".local/share/PrismLauncher/assets"
+    ".local/share/PrismLauncher/cache"
+    ".local/share/PrismLauncher/libraries"
+    ".local/share/lutris/runners"
+    ".local/share/lutris/runtime"
+    # OSTree object store, rebuilt from flathub. App *data* in .var/app/*/
+    # is kept; only the per-app caches are dropped.
+    ".local/share/flatpak/repo"
+    ".var/app/*/cache"
+    # Regenerates by definition.
+    ".cache"
+    ".local/share/Trash"
+    # Would archive its own output.
+    "backup-staging"
+)
+
+DRY_RUN=0
+
+# --- interrupt handling ------------------------------------------------------
+# Ctrl-C during a multi-hour transfer must leave you knowing exactly where you
+# stand, not just a dead prompt. Background helpers are tracked so none are
+# orphaned, and each phase reports its own resume story.
+
+CHILD_PIDS=()
+CURRENT_PHASE=""
+
+track_child() { CHILD_PIDS+=("$1"); }
+
+reap_children() {
+    local p
+    for p in "${CHILD_PIDS[@]:-}"; do
+        [[ -n "$p" ]] || continue
+        kill "$p" 2>/dev/null
+        # Give it a moment, then insist.
+        ( sleep 2; kill -9 "$p" 2>/dev/null ) &
+    done
+    CHILD_PIDS=()
+    [[ -n "${TRUNC_PL:-}" ]] && rm -f "$TRUNC_PL"
+    return 0
+}
+
+# --- terminal width -----------------------------------------------------------
+# The CLI prints full paths and does not clip them, so deep trees wrap and the
+# display turns to noise. Clipping has to happen downstream, but naively piping
+# the CLI is what broke this before: it stops believing it is interactive and
+# goes silent. `script` fixes that by giving it a real pty, and the pipe then
+# sits AFTER the pty, so isatty() still reports true (verified).
+#
+# awk was the previous attempt and failed because its line buffering holds back
+# \r-terminated frames until a newline arrives — which for a progress spinner is
+# never. This does its own buffering, flushing on every \r as well as \n.
+TRUNC_PL=""
+
+term_cols() { tput cols 2>/dev/null || echo "${COLUMNS:-100}"; }
+term_rows() { tput lines 2>/dev/null || echo 40; }
+
+# Counting with a glob rather than `ls | wc -l` so a filename containing a
+# newline cannot inflate the count.
+part_count() {
+    local a=("$STAGING"/home.tar.zst.part-*)
+    [[ -e ${a[0]} ]] && printf '%d' "${#a[@]}" || printf '0'
+}
+
+make_truncator() {
+    TRUNC_PL=$(mktemp "${TMPDIR:-/tmp}/home-backup-trunc.XXXXXX")
+    cat > "$TRUNC_PL" <<'PERL'
+use strict; use warnings;
+use Encode qw(decode_utf8 encode_utf8);
+# Raw bytes plus sysread: read() blocks until it has the FULL length asked for,
+# which withholds every spinner frame until a kilobyte piles up. sysread returns
+# whatever has arrived. Decoding happens per-segment, by which point the segment
+# is whole, so no multi-byte character is ever split across a decode.
+binmode(STDIN, ':raw'); binmode(STDOUT, ':raw');
+$| = 1;
+my $cols = $ENV{TRUNC_COLS} || 80;
+sub trunc {
+    my ($s) = @_;
+    my ($out, $w, $cut) = ('', 0, 0);
+    while (length $s) {
+        # Escape sequences occupy no columns, so pass them through uncounted.
+        if ($s =~ s/^(\e\[[0-9;?]*[a-zA-Z])//) { $out .= $1; next; }
+        if ($s =~ s/^(\e\][^\a]*\a)//)         { $out .= $1; next; }
+        $s =~ s/^(.)//s;
+        if ($w >= $cols) { $cut = 1; last; }
+        $out .= $1; $w++;
+    }
+    $out .= "\e[0m" if $cut;   # a dropped reset would leak colour onward
+    return $out;
+}
+my $buf = '';
+while (sysread(STDIN, my $chunk, 4096)) {
+    $buf .= $chunk;
+    # \e[K clears whatever the previous, longer frame left on the line.
+    while ($buf =~ s/^(.*?)([\r\n])//s) {
+        print encode_utf8(trunc(decode_utf8($1))), "\e[K", $2;
+    }
+}
+print encode_utf8(trunc(decode_utf8($buf))) if length $buf;
+PERL
+}
+
+on_interrupt() {
+    trap '' INT TERM          # a second Ctrl-C must not re-enter this
+    printf '\n\n\033[33mInterrupted.\033[0m\n'
+    reap_children
+
+    case "$CURRENT_PHASE" in
+        stage)
+            printf '  The archive is INCOMPLETE and no completion marker was written.\n'
+            printf '  Partial parts remain in %s for inspection.\n' "$STAGING"
+            printf '  Re-running home-backup stage discards them and starts over —\n'
+            printf '  there is no safe way to resume a half-written tar stream.\n'
+            ;;
+        upload)
+            printf '  Upload stopped. Nothing is corrupted: the CLI only publishes\n'
+            printf '  complete files, so no truncated part can be left behind.\n\n'
+            local n
+            n=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+                | jq '[.[] | select(.name.ok)
+                           | select(.name.value | startswith("home.tar.zst.part-"))]
+                      | length')
+            printf '  %s of 50 parts are on the remote.\n' "${n:-?}"
+            printf '  Re-run home-backup upload to continue from there.\n'
+            ;;
+        *)
+            printf '  Nothing was modified.\n'
+            ;;
+    esac
+
+    printf '\n'
+    exit 130                  # 128 + SIGINT, the shell convention
+}
+
+trap on_interrupt INT TERM
+trap 'reap_children' EXIT
+
+die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+say() { printf '\033[1m%s\033[0m\n' "$*"; }
+run() { if (( DRY_RUN )); then printf '  [dry-run] %s\n' "$*"; else eval "$*"; fi; }
+human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
+
+# --- logging -----------------------------------------------------------------
+# The CLI reports failure COUNTS but never filenames, so a transcript alone
+# cannot tell you what went wrong. Two mechanisms: a full transcript for
+# forensics, and a per-directory reconciliation that names the missing files.
+
+open_log() {
+    mkdir -p "$LOG_DIR"
+    LOG="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-$1.log"
+    {
+        printf '=== home-backup %s ===\n' "$1"
+        printf 'started:  %s\n' "$(date -Is)"
+        printf 'host:     %s\n' "$(hostname)"
+        printf 'remote:   %s\n' "$REMOTE"
+        printf 'iface:    %s\n\n' "$(net_iface)"
+    } > "$LOG"
+    printf '  log: %s\n' "$LOG"
+}
+
+logline() { [[ -n "$LOG" ]] && printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >> "$LOG"; }
+
+# Strip ANSI and carriage returns so the log is greppable rather than a mess of
+# spinner frames.
+log_filter() { sed -u 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\r/\n/g' | grep -v '^\s*$'; }
+
+
+# `filesystem list` is NOT recursive, and rclone's protondrive remote is broken
+# (stale 2FA), so recursion has to be done by hand. Emits paths relative to the
+# directory given, matching `find -printf '%P'`.
+#
+# Reads --json, not the human-readable output. The previous version classified
+# nodes by grepping for 🗂️/📄 and extracted names with `awk '{print $NF}'`,
+# which lost every name containing a space and misread any name containing
+# either emoji. Fields are NUL-delimited so names with tabs or newlines survive.
+remote_walk() {
+    local base="$1" prefix="${2:-}" type name esc
+    while IFS= read -r -d '' type && IFS= read -r -d '' name; do
+        [[ -n "$name" ]] || continue
+        case "$type" in
+            folder)
+                esc=${name//\//\\/}   # remote paths escape / inside node names
+                remote_walk "$base/$esc" "${prefix}${name}/"
+                ;;
+            file)
+                printf '%s%s\n' "$prefix" "$name"
+                ;;
+            unnamed)
+                # Name could not be decrypted; the node exists but we cannot
+                # match it against a local path. Surface it rather than drop it.
+                printf 'WARN: undecryptable node name under %s (uid %s)\n' \
+                    "$base" "$name" >&2
+                ;;
+        esac
+    done < <("$PD" filesystem list --json "$base" 2>/dev/null | jq -j '
+        .[] | (if .name.ok
+                then .type + "\u0000" + .name.value
+                else "unnamed\u0000" + .uid
+               end) + "\u0000"')
+}
+
+# Definitive answer to "what failed": compare local filenames against remote.
+# The CLI reports failure counts without filenames, so we ask the filesystem.
+reconcile_dir() {
+    local d="$1" localdir="$HOME/$1" remotedir="$REMOTE/$1"
+    local lf rf missing n
+
+    printf '    reconciling (walking remote tree, this takes a moment)...\n'
+    lf=$(mktemp); rf=$(mktemp)
+    ( cd "$localdir" 2>/dev/null && find . -type f -printf '%P\n' 2>/dev/null ) | sort > "$lf"
+    remote_walk "$remotedir" | sort > "$rf"
+
+    missing=$(comm -23 "$lf" "$rf")
+    n=$(grep -c . <<<"$missing")
+
+    if (( n == 0 )); then
+        printf '    \033[32mreconciled: all %d files present\033[0m\n' "$(wc -l < "$lf")"
+        logline "RECONCILE $d: OK, $(wc -l < "$lf") files"
+    else
+        printf '    \033[33mreconcile: %d of %d files NOT on remote\033[0m (logged)\n' \
+            "$n" "$(wc -l < "$lf")"
+        logline "RECONCILE $d: $n MISSING of $(wc -l < "$lf")"
+        while IFS= read -r f; do
+            [[ -n "$f" ]] || continue
+            local why="unknown"
+            [[ -L "$localdir/$f" && ! -e "$localdir/$f" ]] && why="broken symlink"
+            [[ -f "$localdir/$f" && ! -s "$localdir/$f" ]] && why="zero bytes"
+            [[ -e "$localdir/$f" && ! -r "$localdir/$f" ]] && why="unreadable"
+            printf '%s\t%s\t%s/%s\t%s\n' "$(date -Is)" "$d" "$d" "$f" "$why" >> "$FAILURES"
+            logline "  MISSING [$why] $d/$f"
+        done <<<"$missing"
+    fi
+    rm -f "$lf" "$rf"
+}
+
+# Interface carrying the default route. Not hardcoded — wifi and ethernet swap.
+net_iface() { ip route show default 2>/dev/null | awk '/default/{print $5; exit}'; }
+tx_bytes()  { local i; i=$(net_iface); [[ -n "$i" ]] && cat "/sys/class/net/$i/statistics/tx_bytes" 2>/dev/null || echo 0; }
+
+fmt_dur() {
+    local s=$1
+    (( s < 0 )) && { printf '?'; return; }
+    printf '%dh%02dm' $(( s/3600 )) $(( (s%3600)/60 ))
+}
+
+# Bytes already on the remote. A resumed run must not count them as work left,
+# or the ETA is wildly pessimistic.
+# Exact bytes, from --json. The old version parsed the human-readable column
+# ("1.4 GiB"), so every file was rounded before being summed; measured drift
+# across the 50 archive parts was ~9.6 MB. Small, but the awk also depended on
+# the size sitting at a fixed offset from the end of the line, which broke on
+# any filename containing spaces.
+remote_bytes() {
+    "$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+        | jq '[.[].totalStorageSize // 0] | add // 0'
+}
+
+# Everything this run intends to put on the remote.
+planned_bytes() {
+    local t=0 s d
+    s=$(du -sb "$STAGING" 2>/dev/null | cut -f1); t=$(( t + ${s:-0} ))
+    for d in "${PLAIN_DIRS[@]}"; do
+        s=$(du -sb "$HOME/$d" 2>/dev/null | cut -f1); t=$(( t + ${s:-0} ))
+    done
+    echo "$t"
+}
+
+# Emitted as an array because a string would need word splitting to become
+# separate tar arguments, and that breaks on any excluded path with a space.
+TAR_EXCLUDES=()
+build_tar_excludes() {
+    TAR_EXCLUDES=()
+    local e
+    for e in "${EXCLUDES[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
+    for e in "${PLAIN_DIRS[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
+}
+
+# --- stage -------------------------------------------------------------------
+
+cmd_stage() {
+    CURRENT_PHASE=stage
+    open_log stage
+    command -v zstd >/dev/null || die "zstd is required"
+    mkdir -p "$STAGING"
+
+    say "Building archive of \$HOME (excluding plain dirs and caches)"
+    printf '  excluding %d paths\n' "$(( ${#EXCLUDES[@]} + ${#PLAIN_DIRS[@]} ))"
+
+    # Completeness is tracked by an explicit marker, NOT by the parts existing.
+    # An interrupted run leaves valid-looking parts behind; trusting their
+    # presence would silently ship a truncated backup.
+    local marker="$STAGING/.archive-complete"
+
+    if [[ -f "$marker" ]]; then
+        printf '  already built and verified complete:\n'
+        sed 's/^/    /' "$marker"
+        printf '  delete %s to rebuild\n' "$marker"
+    else
+        if compgen -G "$STAGING/home.tar.zst.part-*" >/dev/null; then
+            printf '  \033[33mfound INCOMPLETE parts from an interrupted run — discarding\033[0m\n'
+            printf '    %s across %d parts\n' \
+                "$(du -sch "$STAGING"/home.tar.zst.part-* 2>/dev/null | tail -1 | cut -f1)" \
+                "$(part_count)"
+            run "rm -f '$STAGING'/home.tar.zst.part-*"
+        fi
+
+        # --ignore-failed-read: sockets and files that vanish mid-run must not
+        # abort a multi-hour archive.
+        # PIPESTATUS is checked because a failure in tar or zstd is invisible
+        # otherwise — split succeeds happily on a truncated stream.
+        if (( DRY_RUN )); then
+            run "tar -cf - ... | zstd -3 -T0 | split -b '$SPLIT_SIZE' - '$STAGING/home.tar.zst.part-'"
+        else
+            # Without this the terminal sits silent for hours with no way to
+            # tell progress from a hang. Reports staged size and rate every 15s.
+            local start_ts; start_ts=$(date +%s)
+            (
+                while sleep 15; do
+                    local now sz el rate
+                    now=$(date +%s)
+                    sz=$(du -sb "$STAGING" 2>/dev/null | cut -f1); sz=${sz:-0}
+                    el=$(( now - start_ts )); (( el < 1 )) && el=1
+                    rate=$(( sz / el / 1048576 ))
+                    printf '\r  \033[2K%s staged | %d parts | %02d:%02d:%02d elapsed | %d MB/s' \
+                        "$(numfmt --to=iec "$sz")" \
+                        "$(part_count)" \
+                        $(( el/3600 )) $(( (el%3600)/60 )) $(( el%60 )) "$rate"
+                done
+            ) &
+            local progress_pid=$!
+            track_child "$progress_pid"
+
+            build_tar_excludes
+            set -o pipefail
+            tar -cf - -C "$HOME" --ignore-failed-read --warning=no-file-changed \
+                "${TAR_EXCLUDES[@]}" . \
+                | zstd -3 -T0 \
+                | split -b "$SPLIT_SIZE" - "$STAGING/home.tar.zst.part-"
+            local rc=$?
+            set +o pipefail
+
+            kill "$progress_pid" 2>/dev/null
+            CHILD_PIDS=()
+            printf '\n'
+
+            if (( rc != 0 )); then
+                printf '  \033[31marchive FAILED (exit %d) — parts left for inspection, no marker written\033[0m\n' "$rc"
+                printf '  re-run home-backup stage to start over\n'
+                return 1
+            fi
+
+            # Prove the stream actually terminates before declaring success.
+            printf '  verifying archive integrity (reads it back)...\n'
+            local entries
+            entries=$(cat "$STAGING"/home.tar.zst.part-* | zstd -dc 2>/dev/null | tar -tf - 2>/dev/null | wc -l)
+            if (( entries < 100000 )); then
+                printf '  \033[31mverification FAILED: only %d entries, archive looks truncated\033[0m\n' "$entries"
+                return 1
+            fi
+            {
+                printf 'completed: %s\n' "$(date -Is)"
+                printf 'entries:   %d\n' "$entries"
+                printf 'parts:     %d\n' "$(part_count)"
+                printf 'size:      %s\n' "$(du -sch "$STAGING"/home.tar.zst.part-* | tail -1 | cut -f1)"
+            } > "$marker"
+            printf '  \033[32mverified: %d entries\033[0m\n' "$entries"
+        fi
+    fi
+
+    say "Encrypting sensitive items"
+    local kit="$HOME/reinstall-kit/2026-08-03"
+    local f="$kit/luks-header-nvme1n1p3.img"
+    if [[ ! -f "$f" ]]; then
+        printf '  skip (absent): %s\n' "${f##*/}"
+    elif [[ -f "$STAGING/${f##*/}.gpg" ]]; then
+        printf '  already done: %s\n' "${f##*/}"
+    else
+        run "gpg --batch --yes --encrypt --recipient C8ABE62412652B9E \
+             --output '$STAGING/${f##*/}.gpg' '$f'"
+    fi
+
+    say "Staging contents"
+    # shellcheck disable=SC2012  # This is a human-readable listing for display, not parsed.
+    ls -lh "$STAGING" 2>/dev/null | tail -n +2
+    printf '\n  total: %s\n' "$(du -sh "$STAGING" 2>/dev/null | cut -f1)"
+}
+
+# --- upload ------------------------------------------------------------------
+
+cmd_upload() {
+    CURRENT_PHASE=upload
+    open_log upload
+    [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
+    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
+    command -v perl >/dev/null || die "perl not found (needed to clip output to the terminal)"
+    "$PD" filesystem list "$REMOTE_ROOT" >/dev/null 2>&1 || die "Not authenticated. Run: $PD auth login"
+    make_truncator
+
+    run "'$PD' filesystem create-folder '$REMOTE_ROOT' '$REMOTE_NAME' 2>/dev/null || true"
+
+    # Live throughput + ETA. proton-drive prints nothing during a transfer, so
+    # without this a multi-hour upload is indistinguishable from a hang.
+    # Measured off the default-route interface: it counts a little non-upload
+    # traffic, but at these volumes the upload dominates.
+    if (( ! DRY_RUN )); then
+        local plan done0 tx0 t0
+        plan=$(planned_bytes)
+        done0=$(remote_bytes)
+        tx0=$(tx_bytes); t0=$(date +%s)
+        local left=$(( plan - done0 )); (( left < 0 )) && left=0
+
+        printf '  plan: %s total, %s already remote, %s to go\n\n' \
+            "$(human "$plan")" "$(human "$done0")" "$(human "$left")"
+
+        (
+            # Rolling window, NOT a cumulative average. Averaging since t0
+            # folds in all the pre-transfer startup, which pins the rate near
+            # zero and yields ETAs in the tens of thousands of hours.
+            local tx_prev=$tx0 t_prev=$t0 smooth=0
+            while sleep 60; do
+                local now tx el sent window wsecs rate eta
+                now=$(date +%s); tx=$(tx_bytes)
+                el=$(( now - t0 )); (( el < 1 )) && el=1
+                sent=$(( tx - tx0 )); (( sent < 0 )) && sent=0
+
+                window=$(( tx - tx_prev )); (( window < 0 )) && window=0
+                wsecs=$(( now - t_prev )); (( wsecs < 1 )) && wsecs=1
+                rate=$(( window / wsecs ))
+                tx_prev=$tx; t_prev=$now
+
+                # Exponential smoothing so one stalled interval does not make
+                # the ETA leap around.
+                if (( smooth == 0 )); then smooth=$rate
+                else smooth=$(( (smooth * 2 + rate) / 3 )); fi
+
+                # Below ~100 KB/s there is no meaningful transfer to project.
+                if (( smooth > 102400 )); then
+                    eta=$(( (left - sent) / smooth ))
+                    (( eta < 0 )) && eta=0
+                else
+                    eta=-1
+                fi
+                rate=$smooth
+
+                # Build every field as a plain variable first. Nesting these as
+                # command substitutions inside printf arguments hides failures:
+                # one bad expansion and the whole line silently never appears.
+                local s_sent s_left s_rate s_pct s_eta line
+                s_sent=$(human "$sent")
+                s_left=$(human "$left")
+                if (( rate > 102400 )); then
+                    s_rate=$(awk -v r="$rate" 'BEGIN{printf "%.1f MB/s", r/1048576}')
+                else
+                    s_rate="measuring..."
+                fi
+                if (( left > 0 )); then
+                    s_pct=$(( sent * 100 / left ))
+                    (( s_pct > 100 )) && s_pct=100
+                else
+                    s_pct=100
+                fi
+                if (( eta >= 0 )); then s_eta=$(fmt_dur "$eta"); else s_eta="--"; fi
+
+                line="$s_pct% | $s_rate | ETA $s_eta | $s_sent of $s_left"
+
+                # The CLI redraws its progress block with \r and cursor-up, so
+                # ANY line printed to stdout gets painted over within a second.
+                # Three places it cannot reach instead:
+                #
+                #   1. the terminal/tmux title — always visible, never scrolled
+                printf '\033]0;backup %s\007' "$line"
+                #   2. a status file, so `home-backup eta` can read it from
+                #      another terminal without re-measuring
+                printf '%s\n%s\n' "$(date +%s)" "$line" > "$LOG_DIR/.status"
+                #   3. the log, for the record
+                printf '[%s] RATE %s\n' "$(date +%H:%M:%S)" "$line" >> "$LOG"
+
+                # Occasional scrollback marker. Rare enough that being
+                # overwritten sometimes does not matter.
+                if (( el % 300 < 60 )); then
+                    printf '\n  \033[36m>> %s\033[0m\n' "$line"
+                fi
+            done
+        ) &
+        UPLOAD_PROGRESS_PID=$!
+        track_child "$UPLOAD_PROGRESS_PID"
+    fi
+
+    # Docs go up FIRST and standalone. Mid-reinstall you have no working system,
+    # so restore instructions buried inside a 105G archive are worthless — these
+    # need to be readable from the web UI or a phone.
+    say "Uploading docs (readable without unpacking anything)"
+    local kit="$HOME/reinstall-kit/2026-08-03"
+    for d in RESTORE.md CLAUDE.md README.md proton-drive-map.md; do
+        [[ -f "$kit/$d" ]] && run "'$PD' filesystem upload -c replace '$kit/$d' '$REMOTE'"
+    done
+
+    if compgen -G "$STAGING/home.tar.zst.part-*" >/dev/null \
+       && [[ ! -f "$STAGING/.archive-complete" ]]; then
+        die "Staged parts exist but the archive was never verified complete.
+Uploading it would ship a truncated backup. Run: home-backup stage"
+    fi
+
+    if compgen -G "$STAGING/*" >/dev/null; then
+        # Once every staged file is on the remote there is nothing to gain from
+        # walking them again. The CLI's skip is cheap but still one API round
+        # trip per file, and this runs on every resume.
+        local lnames rnames pending
+        lnames=$(cd "$STAGING" 2>/dev/null && { local a=(*); [[ -e ${a[0]} ]] && printf '%s\n' "${a[@]}" | sort; })
+        # --json for the same reason remote_walk uses it: awk '{print $NF}' on
+        # the human-readable output keeps only the text after the last space.
+        rnames=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+                 | jq -r '.[] | select(.name.ok) | .name.value' | sort)
+        pending=$(comm -23 <(printf '%s\n' "$lnames") <(printf '%s\n' "$rnames") | grep -c .)
+
+        if (( pending == 0 )); then
+            say "Archive: all $(printf '%s\n' "$lnames" | grep -c .) staged files already on remote — skipping"
+            logline "STAGING complete, skipped"
+        else
+            say "Uploading archives ($pending of $(printf '%s\n' "$lnames" | grep -c .) still to go)"
+            run "'$PD' filesystem upload -f skip -d merge -t '$STAGING'/* '$REMOTE'"
+            logline "STAGING uploaded, $pending were pending"
+        fi
+    else
+        printf '  nothing staged — run: home-backup stage\n'
+    fi
+
+    local d
+    for d in "${PLAIN_DIRS[@]}"; do
+        [[ -d "$HOME/$d" ]] || continue
+        say "Uploading $d ($(du -sh "$HOME/$d" 2>/dev/null | cut -f1))"
+        logline "START $d ($(find "$HOME/$d" -type f 2>/dev/null | wc -l) files)"
+
+        # -f skip:  skip byte-identical FILES (content-addressed, so re-runs resume)
+        # -d merge: descend into folders that already exist
+        #
+        # Do NOT use -c. It sets the FOLDER strategy to skip as well, so once a
+        # directory exists on the remote the whole tree below it is skipped.
+        # That silently left Pictures/ holding one empty subfolder while the
+        # CLI reported success — 88G that looked backed up and was not.
+        if (( DRY_RUN )); then
+            run "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'"
+        else
+            # `script` gives the CLI a pty so it keeps printing filenames and
+            # per-file percentages; -a -f append and flush the typescript so
+            # `home-backup logs` can follow it.
+            #
+            # Output goes STRAIGHT to the terminal. Do not put a filter here.
+            # The CLI does not print lines — it redraws a block by counting the
+            # lines it wrote, moving the cursor up that many times and clearing
+            # each one. That count depends on the exact terminal width, so any
+            # filter that changes line lengths (clipping) or inserts escapes
+            # makes it erase the wrong lines and the display goes blank. Three
+            # attempts died here: tee (killed its isatty check), awk (buffered
+            # past \r), and a perl clipper (broke the cursor arithmetic).
+            #
+            # Long paths therefore wrap. Fixing that properly means not
+            # relaying its output at all: capture it, parse the progress and
+            # counter lines, and render our own display.
+            if [[ -n "${HOME_BACKUP_CLIP:-}" ]]; then
+                local cols rows
+                cols=$(term_cols); rows=$(term_rows)
+                script -q -e -a -f -c \
+                    "stty cols $cols rows $rows 2>/dev/null; '$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
+                    "$LOG.raw" \
+                    | TRUNC_COLS="$cols" perl "$TRUNC_PL"
+            else
+                script -q -e -a -f -c \
+                    "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
+                    "$LOG.raw"
+            fi
+        fi
+
+        # Fold the raw typescript into the readable log now the dir is done.
+        if [[ -f "$LOG.raw" ]]; then
+            { printf '\n--- %s transcript ---\n' "$d"; log_filter < "$LOG.raw"; } >> "$LOG"
+            : > "$LOG.raw"
+        fi
+        logline "END $d"
+        # The CLI's failure count has no filenames attached. This does.
+        reconcile_dir "$d"
+    done
+
+    if [[ -n "${UPLOAD_PROGRESS_PID:-}" ]]; then
+        kill "$UPLOAD_PROGRESS_PID" 2>/dev/null
+        CHILD_PIDS=()
+        printf '\n'
+    fi
+
+    say "Done. Verify with: home-backup verify"
+}
+
+# --- eta ---------------------------------------------------------------------
+# Safe to run from a second terminal while an upload is in progress.
+
+cmd_eta() {
+    [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
+    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
+
+    local plan done_b left
+    plan=$(planned_bytes)
+    done_b=$(remote_bytes)
+    left=$(( plan - done_b )); (( left < 0 )) && left=0
+
+    say "Upload progress"
+    printf '  planned    %s\n' "$(human "$plan")"
+    printf '  on remote  %s  (%d%%)\n' "$(human "$done_b")" \
+        "$(( plan > 0 ? done_b*100/plan : 0 ))"
+    printf '  remaining  %s\n\n' "$(human "$left")"
+
+    if ! pgrep -f 'proton-drive filesystem upload' >/dev/null; then
+        printf '  \033[33mno upload running\033[0m — start with: home-backup upload\n'
+        return 0
+    fi
+
+    # The running upload publishes its own figure here every 60s. Reading it is
+    # instant and matches exactly what the title bar shows, so prefer it over
+    # taking a fresh 30s sample.
+    if [[ -f "$LOG_DIR/.status" ]]; then
+        local st_ts st_line age
+        st_ts=$(head -1 "$LOG_DIR/.status" 2>/dev/null)
+        st_line=$(sed -n 2p "$LOG_DIR/.status" 2>/dev/null)
+        age=$(( $(date +%s) - ${st_ts:-0} ))
+        if (( age < 180 )) && [[ -n "$st_line" ]]; then
+            printf '  live (%ds ago): \033[36m%s\033[0m\n' "$age" "$st_line"
+            return 0
+        fi
+    fi
+
+    # 30s sample. Long enough to smooth out per-file gaps in the CLI's pacing.
+    printf '  sampling throughput for 30s...\n'
+    local tx0 tx1 rate
+    tx0=$(tx_bytes); sleep 30; tx1=$(tx_bytes)
+    rate=$(( (tx1 - tx0) / 30 ))
+
+    if (( rate <= 0 )); then
+        printf '  \033[33mno traffic measured — stalled, or between files\033[0m\n'
+        return 0
+    fi
+
+    printf '  rate       %.2f MB/s (%.1f Mbit/s)\n' \
+        "$(awk -v r="$rate" 'BEGIN{printf "%.2f", r/1048576}')" \
+        "$(awk -v r="$rate" 'BEGIN{printf "%.1f", r*8/1048576}')"
+    printf '  ETA        %s\n' "$(fmt_dur $(( left / rate )))"
+    printf '  finishes   ~%s\n' "$(date -d "+$(( left / rate )) seconds" '+%a %H:%M')"
+}
+
+# --- logs --------------------------------------------------------------------
+
+cmd_logs() {
+    [[ -d "$LOG_DIR" ]] || die "No logs yet — they appear once stage or upload runs."
+
+    say "Runs"
+    local f
+    for f in "$LOG_DIR"/*.log; do
+        [[ -f "$f" ]] || continue
+        printf '  %-34s %7s  %s\n' "$(basename "$f")" \
+            "$(du -h "$f" | cut -f1)" \
+            "$(grep -m1 '^started:' "$f" | cut -d' ' -f2-)"
+    done
+
+    if [[ -s "$FAILURES" ]]; then
+        printf '\n'
+        say "Files that never reached the remote"
+        printf '  %-52s %s\n' "PATH" "WHY"
+        awk -F'\t' '{printf "  %-52s %s\n", substr($3,1,52), $4}' "$FAILURES" | sort -u | head -40
+        local n; n=$(sort -u "$FAILURES" | wc -l)
+        (( n > 40 )) && printf '  ... and %d more in %s\n' "$(( n - 40 ))" "$FAILURES"
+        printf '\n'
+        awk -F'\t' '{c[$4]++} END{for(w in c) printf "  %5d  %s\n", c[w], w}' "$FAILURES" | sort -rn
+    else
+        printf '\n  No failures recorded.\n'
+    fi
+
+    printf '\n  full logs: %s\n' "$LOG_DIR"
+}
+
+# --- verify ------------------------------------------------------------------
+
+cmd_verify() {
+    CURRENT_PHASE=verify
+    open_log verify
+
+    # Two levels, because they answer different questions.
+    #
+    #   presence  — every local file exists at the right remote path.
+    #               Always available. Names only, no content guarantee.
+    #   checksum  — contents actually match. Needs rclone, whose protondrive
+    #               backend re-authenticates with 2FA and expires periodically.
+    local have_rclone=0
+    if command -v rclone >/dev/null && rclone lsd "protondrive:" >/dev/null 2>&1; then
+        have_rclone=1
+    else
+        printf '  \033[33mrclone unavailable for protondrive\033[0m — presence check only.\n'
+        printf '  For checksum verification: rclone config reconnect protondrive:\n\n'
+    fi
+
+    local d
+    for d in "${PLAIN_DIRS[@]}"; do
+        [[ -d "$HOME/$d" ]] || continue
+        say "Checking $d"
+        reconcile_dir "$d"
+        if (( have_rclone )); then
+            printf '    checksum comparison...\n'
+            run "rclone check '$HOME/$d' 'protondrive:$REMOTE_NAME/$d' --one-way 2>&1 | tail -5"
+        fi
+    done
+
+    say "Archive parts"
+    local lp rp
+    lp=$(part_count)
+    rp=$("$PD" filesystem list -t file "$REMOTE" 2>/dev/null | grep -c 'part-')
+    printf '  local %s / remote %s  %s\n' "$lp" "$rp" \
+        "$( (( lp == rp )) && printf '\033[32mOK\033[0m' || printf '\033[31mMISMATCH\033[0m' )"
+    logline "PARTS local=$lp remote=$rp"
+
+    printf '\n'
+    if [[ -s "$FAILURES" ]]; then
+        printf '  \033[33mSome files never reached the remote.\033[0m See: home-backup logs\n'
+    else
+        printf '  \033[32mNo missing files recorded.\033[0m\n'
+    fi
+    printf '  Re-running home-backup upload re-uploads anything whose content\n'
+    printf '  differs — the CLI skips only byte-identical files.\n'
+}
+
+# --- status ------------------------------------------------------------------
+
+cmd_status() {
+    local total=0 s
+    say "PLAIN (uploaded as files)"
+    for d in "${PLAIN_DIRS[@]}"; do
+        s=$(du -sb "$HOME/$d" 2>/dev/null | cut -f1) || continue
+        total=$((total+s)); printf '  %-14s %s\n' "$d" "$(human "$s")"
+    done
+    printf '  %-14s %s\n\n' "subtotal" "$(human "$total")"
+
+    say "EXCLUDED"
+    local ex=0
+    for e in "${EXCLUDES[@]}"; do
+        # shellcheck disable=SC2086  # Glob expansion is deliberate; exclude patterns contain wildcards.
+        s=$(du -sbc $HOME/$e 2>/dev/null | tail -1 | cut -f1) || continue
+        [[ -z "$s" || "$s" == 0 ]] && continue
+        ex=$((ex+s)); printf '  %-44s %s\n' "$e" "$(human "$s")"
+    done
+    printf '  %-44s %s\n\n' "subtotal" "$(human "$ex")"
+
+    local home_b; home_b=$(du -sb "$HOME" 2>/dev/null | cut -f1)
+    say "TOTALS"
+    printf '  home            %s\n' "$(human "$home_b")"
+    printf '  excluded        %s\n' "$(human "$ex")"
+    printf '  to back up      %s  (raw)\n' "$(human $((home_b-ex)))"
+    printf '  of which plain  %s\n' "$(human "$total")"
+    printf '  to archive      %s  (raw, compresses well)\n\n' "$(human $((home_b-ex-total)))"
+
+    say "STAGING"
+    [[ -d "$STAGING" ]] && du -sh "$STAGING" || printf '  not built yet\n'
+}
+
+# --- main --------------------------------------------------------------------
+
+CMD="${1:-status}"
+[[ "$CMD" == "--dry-run" ]] && { DRY_RUN=1; CMD="${2:-status}"; }
+[[ "${2:-}" == "--dry-run" ]] && DRY_RUN=1
+
+case "$CMD" in
+    stage)  cmd_stage ;;
+    upload) cmd_upload ;;
+    verify) cmd_verify ;;
+    status) cmd_status ;;
+    eta)    cmd_eta ;;
+    logs)   cmd_logs ;;
+    -h|--help) sed -n '2,22p' "$0" | sed 's/^# \?//' ;;
+    *) die "Unknown command: $CMD  (stage|upload|verify|status|eta|logs)" ;;
+esac
