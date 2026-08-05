@@ -115,10 +115,14 @@ EXCLUDES = [
 LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "home-backup"
 FAILURES = LOG_DIR / "failures.tsv"
 
-# No movement for this long means wedged. Observed twice on 2026-08-05: the
-# spinner kept animating with the percentage frozen and ~11 KB/s of keepalive
-# traffic, for tens of minutes, with no error raised.
-STALL_SECONDS = 180
+# The CLI hangs for minutes at a time and then resumes by itself. Measured on
+# 2026-08-05: 14 KB/s across 2 connections while hung, 501 KB/s across 8 once
+# it recovered, with no error raised either way. A 180s threshold fired at
+# 331s on a hang that cleared on its own, so this only warns well past the
+# point where recovery is still plausible.
+STALL_SECONDS = 900
+# Long enough to be worth saying something, short enough to notice.
+STALL_NOTICE_SECONDS = 240
 
 # Listing is read-only, so unlike uploading it is safe to run concurrently.
 # One call per folder at ~0.9s serial makes verify a 3-hour job; this is the
@@ -430,10 +434,21 @@ def _upload_panel(state: DirState, rate: Rate, overall, current) -> Group:
     if state.stalled_for > STALL_SECONDS:
         body.append(
             Text(
-                f"[WARN] no progress for {int(state.stalled_for)}s — stuck on "
-                f"{state.current_file or '?'}. Ctrl-C and re-run; completed "
-                f"files are skipped.",
+                f"[WARN] no progress for {fmt_dur(state.stalled_for)} on "
+                f"{state.current_file or '?'} — past the point where these "
+                f"usually clear. Ctrl-C is safe; completed files are skipped.",
                 style="bold yellow",
+            )
+        )
+    elif state.stalled_for > STALL_NOTICE_SECONDS:
+        # These clear by themselves. Saying so stops a recovering transfer
+        # from being killed in the belief that it is dead.
+        body.append(
+            Text(
+                f"[INFO] paused {int(state.stalled_for)}s on "
+                f"{state.current_file or '?'} — the CLI does this and resumes "
+                f"on its own. Leave it.",
+                style="dim yellow",
             )
         )
     return Group(
