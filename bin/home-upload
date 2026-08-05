@@ -355,6 +355,63 @@ class Rate:
 # --- journal ------------------------------------------------------------------
 
 
+class Connections:
+    """Count the child's established TCP connections.
+
+    Worth showing: during a hang the CLI sits on 2 connections at ~14 KB/s,
+    and on recovery it opens 8 and jumps to ~500 KB/s. The count moves before
+    the throughput does, so it is the earliest signal of which state it is in.
+
+    Sockets are matched by inode — the pid's fds give the inodes it owns, and
+    /proc/net/tcp gives the state of each. No root needed.
+    """
+
+    def __init__(self, pid: int, interval: float = 1.0) -> None:
+        self.pid = pid
+        self.interval = interval
+        self._last = 0.0
+        self._count = 0
+
+    def _inodes(self) -> set[str]:
+        found = set()
+        try:
+            for fd in os.scandir(f"/proc/{self.pid}/fd"):
+                try:
+                    target = os.readlink(fd.path)
+                except OSError:
+                    continue
+                if target.startswith("socket:["):
+                    found.add(target[8:-1])
+        except OSError:
+            pass
+        return found
+
+    def count(self) -> int:
+        now = time.monotonic()
+        if now - self._last < self.interval:
+            return self._count
+        self._last = now
+
+        mine = self._inodes()
+        if not mine:
+            self._count = 0
+            return 0
+
+        total = 0
+        for proto in ("tcp", "tcp6"):
+            try:
+                lines = Path(f"/proc/net/{proto}").read_text().splitlines()[1:]
+            except OSError:
+                continue
+            for line in lines:
+                f = line.split()
+                # st == 01 is ESTABLISHED; field 9 is the socket inode.
+                if len(f) > 9 and f[3] == "01" and f[9] in mine:
+                    total += 1
+        self._count = total
+        return total
+
+
 class Journal:
     """Append-only record, so a wedge stays diagnosable after the fact."""
 
@@ -418,7 +475,7 @@ class DirState:
             self.last_change = time.monotonic()
 
 
-def _upload_panel(state: DirState, rate: Rate, overall, current) -> Group:
+def _upload_panel(state: DirState, rate: Rate, overall, current, conns=None) -> Group:
     counters = Table.grid(padding=(0, 2))
     counters.add_row(
         Text("uploaded", style="dim"), Text(str(state.uploaded), style="green"),
@@ -427,8 +484,12 @@ def _upload_panel(state: DirState, rate: Rate, overall, current) -> Group:
         Text(str(state.failed), style="red" if state.failed else "dim"),
         Text("queued", style="dim"), Text(str(state.queued)),
     )
+    n = conns.count() if conns else 0
     status = Text.assemble(
-        ("rate  ", "dim"), (human_rate(rate.bytes_per_sec()), "cyan")
+        ("rate  ", "dim"), (human_rate(rate.bytes_per_sec()), "cyan"),
+        ("    conns  ", "dim"),
+        # Few connections alongside a low rate is the hang signature.
+        (str(n), "yellow" if n <= 2 else "cyan"),
     )
     body = [overall, current, counters, status]
     if state.stalled_for > STALL_SECONDS:
@@ -493,10 +554,11 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
         dimensions=(40, 200),   # its own pty; none of this reaches the screen
     )
 
+    conns = Connections(child.pid)
     buf = ""
     try:
         with Live(
-            _upload_panel(state, rate, overall, current),
+            _upload_panel(state, rate, overall, current, conns),
             console=console, refresh_per_second=8,
         ) as live:
             while True:
@@ -530,7 +592,7 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
                     state.note_activity()
 
                 rate.sample()
-                live.update(_upload_panel(state, rate, overall, current))
+                live.update(_upload_panel(state, rate, overall, current, conns))
                 if not child.isalive():
                     break
     finally:
