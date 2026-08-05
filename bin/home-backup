@@ -77,7 +77,6 @@ DRY_RUN=0
 
 CHILD_PIDS=()
 CURRENT_PHASE=""
-INTERRUPTED=0
 
 track_child() { CHILD_PIDS+=("$1"); }
 
@@ -90,10 +89,64 @@ reap_children() {
         ( sleep 2; kill -9 "$p" 2>/dev/null ) &
     done
     CHILD_PIDS=()
+    [[ -n "${TRUNC_PL:-}" ]] && rm -f "$TRUNC_PL"
+    return 0
+}
+
+# --- terminal width -----------------------------------------------------------
+# The CLI prints full paths and does not clip them, so deep trees wrap and the
+# display turns to noise. Clipping has to happen downstream, but naively piping
+# the CLI is what broke this before: it stops believing it is interactive and
+# goes silent. `script` fixes that by giving it a real pty, and the pipe then
+# sits AFTER the pty, so isatty() still reports true (verified).
+#
+# awk was the previous attempt and failed because its line buffering holds back
+# \r-terminated frames until a newline arrives — which for a progress spinner is
+# never. This does its own buffering, flushing on every \r as well as \n.
+TRUNC_PL=""
+
+term_cols() { tput cols 2>/dev/null || echo "${COLUMNS:-100}"; }
+term_rows() { tput lines 2>/dev/null || echo 40; }
+
+# Counting with a glob rather than `ls | wc -l` so a filename containing a
+# newline cannot inflate the count.
+part_count() {
+    local a=("$STAGING"/home.tar.zst.part-*)
+    [[ -e ${a[0]} ]] && printf '%d' "${#a[@]}" || printf '0'
+}
+
+make_truncator() {
+    TRUNC_PL=$(mktemp "${TMPDIR:-/tmp}/home-backup-trunc.XXXXXX")
+    cat > "$TRUNC_PL" <<'PERL'
+use strict; use warnings;
+binmode(STDIN, ':encoding(UTF-8)'); binmode(STDOUT, ':encoding(UTF-8)');
+$| = 1;
+my $cols = $ENV{TRUNC_COLS} || 80;
+sub trunc {
+    my ($s) = @_;
+    my ($out, $w, $cut) = ('', 0, 0);
+    while (length $s) {
+        # Escape sequences occupy no columns, so pass them through uncounted.
+        if ($s =~ s/^(\e\[[0-9;?]*[a-zA-Z])//) { $out .= $1; next; }
+        if ($s =~ s/^(\e\][^\a]*\a)//)         { $out .= $1; next; }
+        $s =~ s/^(.)//s;
+        if ($w >= $cols) { $cut = 1; last; }
+        $out .= $1; $w++;
+    }
+    $out .= "\e[0m" if $cut;   # a dropped reset would leak colour onward
+    return $out;
+}
+my $buf = '';
+while (read(STDIN, my $chunk, 1024)) {
+    $buf .= $chunk;
+    # \e[K clears whatever the previous, longer frame left on the line.
+    while ($buf =~ s/^(.*?)([\r\n])//s) { print trunc($1), "\e[K", $2; }
+}
+print trunc($buf) if length $buf;
+PERL
 }
 
 on_interrupt() {
-    INTERRUPTED=1
     trap '' INT TERM          # a second Ctrl-C must not re-enter this
     printf '\n\n\033[33mInterrupted.\033[0m\n'
     reap_children
@@ -102,7 +155,7 @@ on_interrupt() {
         stage)
             printf '  The archive is INCOMPLETE and no completion marker was written.\n'
             printf '  Partial parts remain in %s for inspection.\n' "$STAGING"
-            printf '  Re-running `home-backup stage` discards them and starts over —\n'
+            printf '  Re-running home-backup stage discards them and starts over —\n'
             printf '  there is no safe way to resume a half-written tar stream.\n'
             ;;
         upload)
@@ -114,7 +167,7 @@ on_interrupt() {
                            | select(.name.value | startswith("home.tar.zst.part-"))]
                       | length')
             printf '  %s of 50 parts are on the remote.\n' "${n:-?}"
-            printf '  Re-run `home-backup upload` to continue from there.\n'
+            printf '  Re-run home-backup upload to continue from there.\n'
             ;;
         *)
             printf '  Nothing was modified.\n'
@@ -130,7 +183,7 @@ trap 'reap_children' EXIT
 
 die() { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
 say() { printf '\033[1m%s\033[0m\n' "$*"; }
-run() { if (( DRY_RUN )); then printf '  [dry-run] %s\n' "$*"; else eval "$@"; fi; }
+run() { if (( DRY_RUN )); then printf '  [dry-run] %s\n' "$*"; else eval "$*"; fi; }
 human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
 
 # --- logging -----------------------------------------------------------------
@@ -258,10 +311,14 @@ planned_bytes() {
     echo "$t"
 }
 
-tar_excludes() {
+# Emitted as an array because a string would need word splitting to become
+# separate tar arguments, and that breaks on any excluded path with a space.
+TAR_EXCLUDES=()
+build_tar_excludes() {
+    TAR_EXCLUDES=()
     local e
-    for e in "${EXCLUDES[@]}"; do printf -- '--exclude=./%s ' "$e"; done
-    for e in "${PLAIN_DIRS[@]}"; do printf -- '--exclude=./%s ' "$e"; done
+    for e in "${EXCLUDES[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
+    for e in "${PLAIN_DIRS[@]}"; do TAR_EXCLUDES+=( "--exclude=./$e" ); done
 }
 
 # --- stage -------------------------------------------------------------------
@@ -289,7 +346,7 @@ cmd_stage() {
             printf '  \033[33mfound INCOMPLETE parts from an interrupted run — discarding\033[0m\n'
             printf '    %s across %d parts\n' \
                 "$(du -sch "$STAGING"/home.tar.zst.part-* 2>/dev/null | tail -1 | cut -f1)" \
-                "$(ls -1 "$STAGING"/home.tar.zst.part-* 2>/dev/null | wc -l)"
+                "$(part_count)"
             run "rm -f '$STAGING'/home.tar.zst.part-*"
         fi
 
@@ -312,16 +369,17 @@ cmd_stage() {
                     rate=$(( sz / el / 1048576 ))
                     printf '\r  \033[2K%s staged | %d parts | %02d:%02d:%02d elapsed | %d MB/s' \
                         "$(numfmt --to=iec "$sz")" \
-                        "$(ls -1 "$STAGING"/home.tar.zst.part-* 2>/dev/null | wc -l)" \
+                        "$(part_count)" \
                         $(( el/3600 )) $(( (el%3600)/60 )) $(( el%60 )) "$rate"
                 done
             ) &
             local progress_pid=$!
             track_child "$progress_pid"
 
+            build_tar_excludes
             set -o pipefail
             tar -cf - -C "$HOME" --ignore-failed-read --warning=no-file-changed \
-                $(tar_excludes) . \
+                "${TAR_EXCLUDES[@]}" . \
                 | zstd -3 -T0 \
                 | split -b "$SPLIT_SIZE" - "$STAGING/home.tar.zst.part-"
             local rc=$?
@@ -333,7 +391,7 @@ cmd_stage() {
 
             if (( rc != 0 )); then
                 printf '  \033[31marchive FAILED (exit %d) — parts left for inspection, no marker written\033[0m\n' "$rc"
-                printf '  re-run `home-backup stage` to start over\n'
+                printf '  re-run home-backup stage to start over\n'
                 return 1
             fi
 
@@ -348,7 +406,7 @@ cmd_stage() {
             {
                 printf 'completed: %s\n' "$(date -Is)"
                 printf 'entries:   %d\n' "$entries"
-                printf 'parts:     %d\n' "$(ls -1 "$STAGING"/home.tar.zst.part-* | wc -l)"
+                printf 'parts:     %d\n' "$(part_count)"
                 printf 'size:      %s\n' "$(du -sch "$STAGING"/home.tar.zst.part-* | tail -1 | cut -f1)"
             } > "$marker"
             printf '  \033[32mverified: %d entries\033[0m\n' "$entries"
@@ -357,14 +415,18 @@ cmd_stage() {
 
     say "Encrypting sensitive items"
     local kit="$HOME/reinstall-kit/2026-08-03"
-    for f in "$kit/luks-header-nvme1n1p3.img"; do
-        [[ -f "$f" ]] || { printf '  skip (absent): %s\n' "${f##*/}"; continue; }
-        [[ -f "$STAGING/${f##*/}.gpg" ]] && { printf '  already done: %s\n' "${f##*/}"; continue; }
+    local f="$kit/luks-header-nvme1n1p3.img"
+    if [[ ! -f "$f" ]]; then
+        printf '  skip (absent): %s\n' "${f##*/}"
+    elif [[ -f "$STAGING/${f##*/}.gpg" ]]; then
+        printf '  already done: %s\n' "${f##*/}"
+    else
         run "gpg --batch --yes --encrypt --recipient C8ABE62412652B9E \
              --output '$STAGING/${f##*/}.gpg' '$f'"
-    done
+    fi
 
     say "Staging contents"
+    # shellcheck disable=SC2012  # This is a human-readable listing for display, not parsed.
     ls -lh "$STAGING" 2>/dev/null | tail -n +2
     printf '\n  total: %s\n' "$(du -sh "$STAGING" 2>/dev/null | cut -f1)"
 }
@@ -376,7 +438,9 @@ cmd_upload() {
     open_log upload
     [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
     command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
+    command -v perl >/dev/null || die "perl not found (needed to clip output to the terminal)"
     "$PD" filesystem list "$REMOTE_ROOT" >/dev/null 2>&1 || die "Not authenticated. Run: $PD auth login"
+    make_truncator
 
     run "'$PD' filesystem create-folder '$REMOTE_ROOT' '$REMOTE_NAME' 2>/dev/null || true"
 
@@ -427,7 +491,7 @@ cmd_upload() {
                 # Build every field as a plain variable first. Nesting these as
                 # command substitutions inside printf arguments hides failures:
                 # one bad expansion and the whole line silently never appears.
-                local s_sent s_left s_rate s_pct s_eta s_el line
+                local s_sent s_left s_rate s_pct s_eta line
                 s_sent=$(human "$sent")
                 s_left=$(human "$left")
                 if (( rate > 102400 )); then
@@ -442,7 +506,6 @@ cmd_upload() {
                     s_pct=100
                 fi
                 if (( eta >= 0 )); then s_eta=$(fmt_dur "$eta"); else s_eta="--"; fi
-                s_el=$(fmt_dur "$el")
 
                 line="$s_pct% | $s_rate | ETA $s_eta | $s_sent of $s_left"
 
@@ -489,8 +552,11 @@ Uploading it would ship a truncated backup. Run: home-backup stage"
         # walking them again. The CLI's skip is cheap but still one API round
         # trip per file, and this runs on every resume.
         local lnames rnames pending
-        lnames=$(cd "$STAGING" && ls -1 2>/dev/null | grep -v '^\.' | sort)
-        rnames=$("$PD" filesystem list -t file "$REMOTE" 2>/dev/null | awk '{print $NF}' | sort)
+        lnames=$(cd "$STAGING" 2>/dev/null && { local a=(*); [[ -e ${a[0]} ]] && printf '%s\n' "${a[@]}" | sort; })
+        # --json for the same reason remote_walk uses it: awk '{print $NF}' on
+        # the human-readable output keeps only the text after the last space.
+        rnames=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+                 | jq -r '.[] | select(.name.ok) | .name.value' | sort)
         pending=$(comm -23 <(printf '%s\n' "$lnames") <(printf '%s\n' "$rnames") | grep -c .)
 
         if (( pending == 0 )); then
@@ -521,20 +587,20 @@ Uploading it would ship a truncated backup. Run: home-backup stage"
         if (( DRY_RUN )); then
             run "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'"
         else
-            # tee keeps the live display while writing a greppable transcript.
-            # `script` allocates a pty so the CLI still believes it is
-            # interactive and keeps printing the current filename and per-file
-            # percentage. Piping its stdout directly suppresses ALL of that —
-            # both on screen and in the log.
-            # No pipe. `script` writes the typescript to a file AND passes the
-            # child's output straight to the terminal, so the CLI keeps a real
-            # pty: its \r spinner redraws in place, it sizes itself to the
-            # window, and nothing buffers. Piping this output — through tee,
-            # awk, anything — causes flicker, line overflow, and swallows the
-            # rate line.
+            # `script` gives the CLI a pty so it keeps printing filenames and
+            # per-file percentages; -a -f append and flush the typescript for
+            # `home-backup logs` to follow. Clipping happens downstream of the
+            # pty, so the CLI's own isatty() check is unaffected.
+            #
+            # stty inside the command is required: once script's stdout is a
+            # pipe it can no longer read a window size and the pty comes up
+            # 0x0, which the CLI renders badly against.
+            local cols rows
+            cols=$(term_cols); rows=$(term_rows)
             script -q -e -a -f -c \
-                "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
-                "$LOG.raw"
+                "stty cols $cols rows $rows 2>/dev/null; '$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
+                "$LOG.raw" \
+                | TRUNC_COLS="$cols" perl "$TRUNC_PL"
         fi
 
         # Fold the raw typescript into the readable log now the dir is done.
@@ -674,7 +740,7 @@ cmd_verify() {
 
     say "Archive parts"
     local lp rp
-    lp=$(ls -1 "$STAGING"/home.tar.zst.part-* 2>/dev/null | wc -l)
+    lp=$(part_count)
     rp=$("$PD" filesystem list -t file "$REMOTE" 2>/dev/null | grep -c 'part-')
     printf '  local %s / remote %s  %s\n' "$lp" "$rp" \
         "$( (( lp == rp )) && printf '\033[32mOK\033[0m' || printf '\033[31mMISMATCH\033[0m' )"
@@ -686,7 +752,7 @@ cmd_verify() {
     else
         printf '  \033[32mNo missing files recorded.\033[0m\n'
     fi
-    printf '  Re-running `home-backup upload` re-uploads anything whose content\n'
+    printf '  Re-running home-backup upload re-uploads anything whose content\n'
     printf '  differs — the CLI skips only byte-identical files.\n'
 }
 
@@ -704,6 +770,7 @@ cmd_status() {
     say "EXCLUDED"
     local ex=0
     for e in "${EXCLUDES[@]}"; do
+        # shellcheck disable=SC2086  # Glob expansion is deliberate; exclude patterns contain wildcards.
         s=$(du -sbc $HOME/$e 2>/dev/null | tail -1 | cut -f1) || continue
         [[ -z "$s" || "$s" == 0 ]] && continue
         ex=$((ex+s)); printf '  %-44s %s\n' "$e" "$(human "$s")"
