@@ -148,6 +148,23 @@ def strip_ansi(s: str) -> str:
     return RE_ANSI.sub("", s)
 
 
+class CountsColumn(TextColumn):
+    """File counts, tolerating a total that is not known yet.
+
+    The CLI only emits its counter line periodically, so at the start of a
+    directory there is no total. A plain format string renders that as
+    "0/None files".
+    """
+
+    def __init__(self) -> None:
+        super().__init__("")
+
+    def render(self, task) -> Text:
+        if task.total is None:
+            return Text("counting...", style="dim")
+        return Text(f"{int(task.completed)}/{int(task.total)} files")
+
+
 def human(n: float) -> str:
     for unit in ("B", "K", "M", "G", "T"):
         if abs(n) < 1024:
@@ -589,7 +606,7 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=None),
         TaskProgressColumn(),
-        TextColumn("{task.completed}/{task.total} files"),
+        CountsColumn(),
         TimeRemainingColumn(),
         expand=True,
     )
