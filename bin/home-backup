@@ -119,7 +119,12 @@ make_truncator() {
     TRUNC_PL=$(mktemp "${TMPDIR:-/tmp}/home-backup-trunc.XXXXXX")
     cat > "$TRUNC_PL" <<'PERL'
 use strict; use warnings;
-binmode(STDIN, ':encoding(UTF-8)'); binmode(STDOUT, ':encoding(UTF-8)');
+use Encode qw(decode_utf8 encode_utf8);
+# Raw bytes plus sysread: read() blocks until it has the FULL length asked for,
+# which withholds every spinner frame until a kilobyte piles up. sysread returns
+# whatever has arrived. Decoding happens per-segment, by which point the segment
+# is whole, so no multi-byte character is ever split across a decode.
+binmode(STDIN, ':raw'); binmode(STDOUT, ':raw');
 $| = 1;
 my $cols = $ENV{TRUNC_COLS} || 80;
 sub trunc {
@@ -137,12 +142,14 @@ sub trunc {
     return $out;
 }
 my $buf = '';
-while (read(STDIN, my $chunk, 1024)) {
+while (sysread(STDIN, my $chunk, 4096)) {
     $buf .= $chunk;
     # \e[K clears whatever the previous, longer frame left on the line.
-    while ($buf =~ s/^(.*?)([\r\n])//s) { print trunc($1), "\e[K", $2; }
+    while ($buf =~ s/^(.*?)([\r\n])//s) {
+        print encode_utf8(trunc(decode_utf8($1))), "\e[K", $2;
+    }
 }
-print trunc($buf) if length $buf;
+print encode_utf8(trunc(decode_utf8($buf))) if length $buf;
 PERL
 }
 
