@@ -109,7 +109,10 @@ on_interrupt() {
             printf '  Upload stopped. Nothing is corrupted: the CLI only publishes\n'
             printf '  complete files, so no truncated part can be left behind.\n\n'
             local n
-            n=$("$PD" filesystem list -t file "$REMOTE" 2>/dev/null | grep -c 'part-')
+            n=$("$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+                | jq '[.[] | select(.name.ok)
+                           | select(.name.value | startswith("home.tar.zst.part-"))]
+                      | length')
             printf '  %s of 50 parts are on the remote.\n' "${n:-?}"
             printf '  Re-run `home-backup upload` to continue from there.\n'
             ;;
@@ -158,22 +161,35 @@ log_filter() { sed -u 's/\x1b\[[0-9;]*[a-zA-Z]//g; s/\r/\n/g' | grep -v '^\s*$';
 # `filesystem list` is NOT recursive, and rclone's protondrive remote is broken
 # (stale 2FA), so recursion has to be done by hand. Emits paths relative to the
 # directory given, matching `find -printf '%P'`.
+#
+# Reads --json, not the human-readable output. The previous version classified
+# nodes by grepping for 🗂️/📄 and extracted names with `awk '{print $NF}'`,
+# which lost every name containing a space and misread any name containing
+# either emoji. Fields are NUL-delimited so names with tabs or newlines survive.
 remote_walk() {
-    local base="$1" prefix="${2:-}" line name
-    while IFS= read -r line; do
-        [[ -n "$line" ]] || continue
-        name=$(sed 's/\x1b\[[0-9;]*[a-zA-Z]//g' <<<"$line" | sed 's/.*[0-9][0-9]:[0-9][0-9] //')
-        case "$line" in
-            *🗂️*)  # folder: descend
-                name=$(sed 's/.* - //' <<<"$line")
-                [[ -n "$name" ]] && remote_walk "$base/$name" "${prefix}${name}/"
+    local base="$1" prefix="${2:-}" type name esc
+    while IFS= read -r -d '' type && IFS= read -r -d '' name; do
+        [[ -n "$name" ]] || continue
+        case "$type" in
+            folder)
+                esc=${name//\//\\/}   # remote paths escape / inside node names
+                remote_walk "$base/$esc" "${prefix}${name}/"
                 ;;
-            *📄*)  # file: emit
-                name=$(awk '{print $NF}' <<<"$line")
-                [[ -n "$name" ]] && printf '%s%s\n' "$prefix" "$name"
+            file)
+                printf '%s%s\n' "$prefix" "$name"
+                ;;
+            unnamed)
+                # Name could not be decrypted; the node exists but we cannot
+                # match it against a local path. Surface it rather than drop it.
+                printf 'WARN: undecryptable node name under %s (uid %s)\n' \
+                    "$base" "$name" >&2
                 ;;
         esac
-    done < <("$PD" filesystem list "$base" 2>/dev/null)
+    done < <("$PD" filesystem list --json "$base" 2>/dev/null | jq -j '
+        .[] | (if .name.ok
+                then .type + "\u0000" + .name.value
+                else "unnamed\u0000" + .uid
+               end) + "\u0000"')
 }
 
 # Definitive answer to "what failed": compare local filenames against remote.
@@ -222,14 +238,14 @@ fmt_dur() {
 
 # Bytes already on the remote. A resumed run must not count them as work left,
 # or the ETA is wildly pessimistic.
+# Exact bytes, from --json. The old version parsed the human-readable column
+# ("1.4 GiB"), so every file was rounded before being summed; measured drift
+# across the 50 archive parts was ~9.6 MB. Small, but the awk also depended on
+# the size sitting at a fixed offset from the end of the line, which broke on
+# any filename containing spaces.
 remote_bytes() {
-    "$PD" filesystem list -t file "$REMOTE" 2>/dev/null | awk '
-        {
-            v=$(NF-2); u=$(NF-1)
-            m = (u=="GiB") ? 1073741824 : (u=="MiB") ? 1048576 : (u=="KiB") ? 1024 : (u=="B") ? 1 : 0
-            s += v*m
-        }
-        END { printf "%.0f", s+0 }'
+    "$PD" filesystem list -t file --json "$REMOTE" 2>/dev/null \
+        | jq '[.[].totalStorageSize // 0] | add // 0'
 }
 
 # Everything this run intends to put on the remote.
@@ -359,6 +375,7 @@ cmd_upload() {
     CURRENT_PHASE=upload
     open_log upload
     [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
+    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
     "$PD" filesystem list "$REMOTE_ROOT" >/dev/null 2>&1 || die "Not authenticated. Run: $PD auth login"
 
     run "'$PD' filesystem create-folder '$REMOTE_ROOT' '$REMOTE_NAME' 2>/dev/null || true"
@@ -544,6 +561,7 @@ Uploading it would ship a truncated backup. Run: home-backup stage"
 
 cmd_eta() {
     [[ -x "$PD" ]] || die "proton-drive CLI not found at $PD"
+    command -v jq >/dev/null || die "jq not found (needed to parse --json output)"
 
     local plan done_b left
     plan=$(planned_bytes)
