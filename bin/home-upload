@@ -173,28 +173,41 @@ def fmt_dur(seconds: float | None) -> str:
 # --- remote access ------------------------------------------------------------
 
 
-def pd_json(args: list[str]) -> list[dict]:
-    """Run a proton-drive command with --json and parse it.
+def pd_json(args: list[str], retries: int = 3) -> tuple[bool, list[dict]]:
+    """Run a proton-drive command with --json. Returns (succeeded, rows).
+
+    The success flag is not decoration. An earlier version returned a bare
+    list and used [] for every outcome, so a failed listing was
+    indistinguishable from an empty folder. In a parallel walk each silent
+    failure prunes a whole subtree, and every file beneath it is then reported
+    missing: 3418 false 'missing' on Pictures, all of them under one .lrdata
+    tree that was present on the remote the whole time.
 
     Everything reads --json. The human-readable output was parsed once with
     `awk '{print $NF}'`, which keeps only the text after the last space, so
-    every filename containing a space was reported missing. Measured on
-    ~/Music: 7 false 'missing' out of 100.
+    every filename containing a space was reported missing.
     """
-    try:
-        out = subprocess.run(
-            [str(PD), *args, "--json"],
-            capture_output=True, text=True, timeout=300,
-        )
-    except (subprocess.TimeoutExpired, OSError):
-        return []
-    if out.returncode != 0 or not out.stdout.strip():
-        return []
-    try:
-        data = json.loads(out.stdout)
-    except json.JSONDecodeError:
-        return []
-    return data if isinstance(data, list) else []
+    for attempt in range(retries):
+        try:
+            out = subprocess.run(
+                [str(PD), *args, "--json"],
+                capture_output=True, text=True, timeout=300,
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            time.sleep(1 + 2 * attempt)
+            continue
+        if out.returncode == 0:
+            body = out.stdout.strip()
+            if not body:
+                return True, []
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                time.sleep(1 + 2 * attempt)
+                continue
+            return True, (data if isinstance(data, list) else [])
+        time.sleep(1 + 2 * attempt)
+    return False, []
 
 
 def remote_escape(name: str) -> str:
@@ -202,7 +215,7 @@ def remote_escape(name: str) -> str:
     return name.replace("/", "\\/")
 
 
-def remote_list(path: str, kind: str | None = None) -> list[dict]:
+def remote_list(path: str, kind: str | None = None) -> tuple[bool, list[dict]]:
     args = ["filesystem", "list"]
     if kind:
         args += ["-t", kind]
@@ -210,26 +223,47 @@ def remote_list(path: str, kind: str | None = None) -> list[dict]:
     return pd_json(args)
 
 
-def remote_walk(base: str, progress: Progress | None = None, task=None) -> list[str]:
+def remote_list_rows(path: str, kind: str | None = None) -> list[dict]:
+    """Rows only, for callers where a failed listing is not load-bearing."""
+    return remote_list(path, kind)[1]
+
+
+@dataclass
+class Walk:
+    files: set[str] = field(default_factory=set)
+    unreadable: list[str] = field(default_factory=list)   # listings that failed
+    undecryptable: int = 0
+
+    @property
+    def complete(self) -> bool:
+        return not self.unreadable
+
+
+def remote_walk(base: str, progress: Progress | None = None, task=None) -> Walk:
     """Every file under `base`, as paths relative to it.
 
-    `filesystem list` has no recursive flag, so recursion is done here. Folders
+    `filesystem list` has no recursive flag, so recursion happens here. Folders
     are fanned out across a thread pool because each call is a ~0.9s round trip
-    and there can be thousands.
+    and a tree like Lightroom's preview cache has thousands.
+
+    Folders whose listing fails are recorded rather than skipped. A caller must
+    not conclude anything about missing files from an incomplete walk.
     """
-    files: list[str] = []
-    undecryptable = 0
+    walk = Walk()
     frontier = [(base, "")]
 
     with ThreadPoolExecutor(max_workers=LIST_WORKERS) as pool:
         while frontier:
             results = list(pool.map(lambda fp: (fp, remote_list(fp[0])), frontier))
             frontier = []
-            for (path, prefix), entries in results:
+            for (path, prefix), (ok, entries) in results:
+                if not ok:
+                    walk.unreadable.append(path)
+                    continue
                 for e in entries:
                     name = e.get("name") or {}
                     if not name.get("ok"):
-                        undecryptable += 1
+                        walk.undecryptable += 1
                         continue
                     value = name["value"]
                     if e.get("type") == "folder":
@@ -237,24 +271,24 @@ def remote_walk(base: str, progress: Progress | None = None, task=None) -> list[
                             (f"{path}/{remote_escape(value)}", f"{prefix}{value}/")
                         )
                     elif e.get("type") == "file":
-                        files.append(f"{prefix}{value}")
+                        walk.files.add(f"{prefix}{value}")
             if progress is not None and task is not None:
                 progress.update(
-                    task, completed=len(files),
+                    task, completed=len(walk.files),
                     description=f"listing remote ({len(frontier)} folders queued)",
                 )
 
-    if undecryptable:
+    if walk.undecryptable:
         console.print(
-            f"[yellow][WARN] {undecryptable} remote node(s) had undecryptable "
-            f"names and could not be matched[/yellow]"
+            f"[yellow][WARN] {walk.undecryptable} remote node(s) had "
+            f"undecryptable names and could not be matched[/yellow]"
         )
-    return files
+    return walk
 
 
 def remote_part_count() -> int:
     return sum(
-        1 for e in remote_list(REMOTE, "file")
+        1 for e in remote_list_rows(REMOTE, "file")
         if (e.get("name") or {}).get("ok")
         and e["name"]["value"].startswith(PART_PREFIX)
     )
@@ -267,7 +301,10 @@ def remote_bytes() -> int:
     both rounded and depended on the size sitting a fixed number of fields from
     the end of the line.
     """
-    return sum(e.get("totalStorageSize") or 0 for e in remote_list(REMOTE, "file"))
+    return sum(
+        e.get("totalStorageSize") or 0
+        for e in remote_list_rows(REMOTE, "file")
+    )
 
 
 # --- local state --------------------------------------------------------------
@@ -443,7 +480,12 @@ class DirState:
     skipped: int = 0
     queued: int = 0
     current_file: str = ""
+    current_size: str = ""
     current_pct: float = 0.0
+    # Most files upload in one block, so 0.00% is the only percentage the CLI
+    # ever prints for them: 63,867 frames across two logs, one distinct value.
+    # A bar is only worth drawing once a real percentage has appeared.
+    saw_real_pct: bool = False
     started: float = field(default_factory=time.monotonic)
     last_change: float = field(default_factory=time.monotonic)
     _fingerprint: tuple = ()
@@ -491,7 +533,19 @@ def _upload_panel(state: DirState, rate: Rate, overall, current, conns=None) -> 
         # Few connections alongside a low rate is the hang signature.
         (str(n), "yellow" if n <= 2 else "cyan"),
     )
-    body = [overall, current, counters, status]
+
+    # Only draw the per-file bar when the CLI is actually reporting movement
+    # within the file; otherwise say what is in flight and leave it at that.
+    if state.saw_real_pct:
+        current_row = current
+    else:
+        current_row = Text.assemble(
+            ("sending  ", "dim"),
+            (state.current_file or "waiting...", "white"),
+            (f"  {state.current_size}" if state.current_size else "", "dim"),
+        )
+
+    body = [overall, current_row, counters, status]
     if state.stalled_for > STALL_SECONDS:
         body.append(
             Text(
@@ -582,12 +636,18 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
                             t_overall, total=state.total, completed=state.done
                         )
                     elif mp := RE_PROGRESS.search(line):
-                        state.current_pct = float(mp.group(1))
+                        pct = float(mp.group(1))
+                        if mp.group(2) != state.current_file:
+                            state.saw_real_pct = False   # new file, new verdict
+                        state.current_pct = pct
                         state.current_file = mp.group(2)
+                        state.current_size = mp.group(3)
+                        if pct > 0:
+                            state.saw_real_pct = True
                         current.update(
                             t_current,
                             description=mp.group(2)[:60],
-                            completed=state.current_pct,
+                            completed=pct,
                         )
                     state.note_activity()
 
@@ -618,7 +678,7 @@ def cmd_upload(args) -> int:
     if not PD.is_file():
         console.print(f"[red]proton-drive CLI not found at {PD}[/red]")
         return 1
-    if not remote_list(REMOTE_ROOT):
+    if not remote_list(REMOTE_ROOT)[0]:
         console.print(f"[red]Not authenticated. Run: {PD} auth login[/red]")
         return 1
 
@@ -651,7 +711,7 @@ def cmd_upload(args) -> int:
                 return 1
             staged = {p.name for p in STAGING.iterdir() if not p.name.startswith(".")}
             on_remote = {
-                e["name"]["value"] for e in remote_list(REMOTE, "file")
+                e["name"]["value"] for e in remote_list_rows(REMOTE, "file")
                 if (e.get("name") or {}).get("ok")
             }
             if staged - on_remote:
@@ -843,9 +903,30 @@ def cmd_verify(args) -> int:
             TextColumn("[cyan]{task.completed} files"), console=console,
         ) as progress:
             task = progress.add_task(f"listing remote {d}", total=None)
-            remote_files = set(remote_walk(f"{REMOTE}/{d}", progress, task))
+            walk = remote_walk(f"{REMOTE}/{d}", progress, task)
 
-        missing = sorted(local_files - remote_files)
+        # An incomplete listing cannot distinguish "absent" from "not looked
+        # at", and reporting the difference anyway would send you re-uploading
+        # data that is already there.
+        if not walk.complete:
+            console.print(
+                f"[red][ERROR][/red] {d}: {len(walk.unreadable)} folder "
+                f"listing(s) failed after retries — the remote picture is "
+                f"incomplete, so nothing is reported missing for this "
+                f"directory."
+            )
+            for p in walk.unreadable[:5]:
+                console.print(f"    [dim]{p}[/dim]")
+            if len(walk.unreadable) > 5:
+                console.print(f"    [dim]... and {len(walk.unreadable) - 5} more[/dim]")
+            console.print(
+                f"    [dim]retry, or lower LIST_WORKERS (currently "
+                f"{LIST_WORKERS}) if this persists[/dim]"
+            )
+            total_missing += 1
+            continue
+
+        missing = sorted(local_files - walk.files)
         if not missing:
             console.print(
                 f"[green][OK][/green] {d}: all {len(local_files)} files present"
@@ -893,7 +974,7 @@ def cmd_status(_args) -> int:
     )
 
     remote_names = {
-        e["name"]["value"] for e in remote_list(REMOTE, "file")
+        e["name"]["value"] for e in remote_list_rows(REMOTE, "file")
         if (e.get("name") or {}).get("ok")
     }
     t.add_row("files at remote root", "-", str(len(remote_names)))
