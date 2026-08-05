@@ -595,19 +595,33 @@ Uploading it would ship a truncated backup. Run: home-backup stage"
             run "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'"
         else
             # `script` gives the CLI a pty so it keeps printing filenames and
-            # per-file percentages; -a -f append and flush the typescript for
-            # `home-backup logs` to follow. Clipping happens downstream of the
-            # pty, so the CLI's own isatty() check is unaffected.
+            # per-file percentages; -a -f append and flush the typescript so
+            # `home-backup logs` can follow it.
             #
-            # stty inside the command is required: once script's stdout is a
-            # pipe it can no longer read a window size and the pty comes up
-            # 0x0, which the CLI renders badly against.
-            local cols rows
-            cols=$(term_cols); rows=$(term_rows)
-            script -q -e -a -f -c \
-                "stty cols $cols rows $rows 2>/dev/null; '$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
-                "$LOG.raw" \
-                | TRUNC_COLS="$cols" perl "$TRUNC_PL"
+            # Output goes STRAIGHT to the terminal. Do not put a filter here.
+            # The CLI does not print lines — it redraws a block by counting the
+            # lines it wrote, moving the cursor up that many times and clearing
+            # each one. That count depends on the exact terminal width, so any
+            # filter that changes line lengths (clipping) or inserts escapes
+            # makes it erase the wrong lines and the display goes blank. Three
+            # attempts died here: tee (killed its isatty check), awk (buffered
+            # past \r), and a perl clipper (broke the cursor arithmetic).
+            #
+            # Long paths therefore wrap. Fixing that properly means not
+            # relaying its output at all: capture it, parse the progress and
+            # counter lines, and render our own display.
+            if [[ -n "${HOME_BACKUP_CLIP:-}" ]]; then
+                local cols rows
+                cols=$(term_cols); rows=$(term_rows)
+                script -q -e -a -f -c \
+                    "stty cols $cols rows $rows 2>/dev/null; '$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
+                    "$LOG.raw" \
+                    | TRUNC_COLS="$cols" perl "$TRUNC_PL"
+            else
+                script -q -e -a -f -c \
+                    "'$PD' filesystem upload -f skip -d merge '$HOME/$d' '$REMOTE'" \
+                    "$LOG.raw"
+            fi
         fi
 
         # Fold the raw typescript into the readable log now the dir is done.
