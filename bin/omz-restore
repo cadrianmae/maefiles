@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Rebuild oh-my-zsh and its custom plugins on a fresh machine.
+#
+# ~/.oh-my-zsh is deliberately NOT tracked by yadm. It is a git repo, and so is
+# every custom plugin, so tracking them would mean six submodules; `omz update`
+# is a git pull, which would fill the dotfiles history with upstream churn; and
+# it is 29M of code owned by other people. This script plus .zshrc reproduces
+# the same setup from about twenty tracked lines.
+#
+# custom/completions/ is not restored — those regenerate:
+#   _worktrack  shtab, from the worktrack tool
+#   _cheat      ships with cheat
+#   _marker     ships with marker
+#
+#   omz-restore            install and clone anything missing
+#   omz-restore --check    report what is missing, change nothing
+
+set -uo pipefail
+
+ZSH_DIR="${ZSH:-$HOME/.oh-my-zsh}"
+CUSTOM="${ZSH_CUSTOM:-$ZSH_DIR/custom}"
+CHECK=0
+[[ "${1:-}" == "--check" ]] && CHECK=1
+
+# name <tab> url. Keep in step with the plugins=() list in .zshrc.
+read -r -d '' PLUGINS <<'EOF'
+fast-syntax-highlighting	https://github.com/zdharma-continuum/fast-syntax-highlighting
+zsh-autocomplete	https://github.com/marlonrichert/zsh-autocomplete
+zsh-autosuggestions	https://github.com/zsh-users/zsh-autosuggestions
+zsh-syntax-highlighting	https://github.com/zsh-users/zsh-syntax-highlighting
+zsh-claude-code-completions	https://github.com/cadrianmae/zsh-claude-code-completions
+EOF
+
+say() { printf '%s\n' "$*"; }
+
+# --- oh-my-zsh itself --------------------------------------------------------
+if [[ -d "$ZSH_DIR/.git" ]]; then
+    say "[OK]   oh-my-zsh present at $ZSH_DIR"
+elif (( CHECK )); then
+    say "[MISS] oh-my-zsh"
+else
+    say ">> installing oh-my-zsh"
+    # --unattended keeps it from starting a shell or rewriting .zshrc, which
+    # yadm already owns.
+    RUNZSH=no KEEP_ZSHRC=yes sh -c \
+        "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" \
+        "" --unattended || { say "[ERROR] oh-my-zsh install failed"; exit 1; }
+fi
+
+# --- custom plugins ----------------------------------------------------------
+mkdir -p "$CUSTOM/plugins"
+missing=0
+while IFS=$'\t' read -r name url; do
+    [[ -n "$name" ]] || continue
+    dest="$CUSTOM/plugins/$name"
+    if [[ -d "$dest/.git" ]]; then
+        say "[OK]   $name"
+        continue
+    fi
+    missing=$((missing + 1))
+    if (( CHECK )); then
+        say "[MISS] $name  <- $url"
+        continue
+    fi
+    say ">> cloning $name"
+    # depth 1: these are used, not developed. Full history is a fetch away.
+    git clone --depth 1 "$url" "$dest" >/dev/null 2>&1 \
+        && say "[OK]   $name" \
+        || say "[ERROR] failed to clone $name from $url"
+done <<< "$PLUGINS"
+
+if (( CHECK )); then
+    say ""
+    say "$missing plugin(s) missing"
+    exit $(( missing > 0 ))
+fi
+
+say ""
+say "Done. Open a new shell, or: exec zsh"
+say "If a plugin is enabled in .zshrc but not listed here, add it to PLUGINS."
