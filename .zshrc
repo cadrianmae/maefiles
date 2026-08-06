@@ -90,6 +90,7 @@ plugins=(
   zsh-autosuggestions
   # zsh-syntax-highlighting
   fast-syntax-highlighting
+  zsh-claude-code-completions
   zsh-autocomplete
 )
 
