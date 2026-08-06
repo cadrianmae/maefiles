@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# Shrink read-only third-party clones to depth 1.
+#
+# Walks ~/git and, for repos that are demonstrably untouched, truncates history
+# to a single commit and repacks. Typically reclaims 80-90% of .git.
+#
+# A repo is only touched when ALL of these hold:
+#   - not under an owned namespace (see OWNED below)
+#   - working tree clean            (no uncommitted changes)
+#   - no commits ahead of upstream  (nothing unpushed)
+#   - no stashes
+#   - exactly one local branch, tracking a reachable remote
+#
+# Anything failing a check is skipped and reported. History is recoverable by
+# re-cloning, which is the point: these are upstream code you read, not work you
+# authored.
+#
+#   git-slim --dry-run     show what would happen (DO THIS FIRST)
+#   git-slim               do it
+#   git-slim --gc-only     repack without truncating history (safer, less saved)
+#   git-slim <dir>         default: ~/git
+
+set -uo pipefail
+
+ROOT="$HOME/git"
+DRY_RUN=0
+GC_ONLY=0
+
+# Namespaces whose repos are never touched, regardless of cleanliness.
+readonly -a OWNED=( "cadrianmae" "cs-soc-tudublin" )
+
+say()  { printf '\033[1m%s\033[0m\n' "$*"; }
+skip() { printf '  \033[33mskip\033[0m  %-46s %s\n' "$1" "$2"; }
+die()  { printf '\033[31m%s\033[0m\n' "$*" >&2; exit 1; }
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --dry-run) DRY_RUN=1; shift ;;
+        --gc-only) GC_ONLY=1; shift ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        -*) die "Unknown option: $1" ;;
+        *)  ROOT="$1"; shift ;;
+    esac
+done
+
+[[ -d "$ROOT" ]] || die "Not a directory: $ROOT"
+
+is_owned() {
+    local r="$1" o
+    for o in "${OWNED[@]}"; do [[ "$r" == *"/$o/"* ]] && return 0; done
+    return 1
+}
+
+total_before=0
+total_after=0
+done_n=0
+skip_n=0
+
+say "Scanning $ROOT"
+(( DRY_RUN )) && printf '\033[35mDRY RUN — nothing will be modified\033[0m\n'
+printf '\n'
+
+while IFS= read -r gitdir; do
+    r="${gitdir%/.git}"
+    rel="${r#"$ROOT"/}"
+
+    is_owned "/$rel/" && { skip "$rel" "owned namespace"; skip_n=$((skip_n+1)); continue; }
+
+    # Any local state at all disqualifies it.
+    dirty=$(git -C "$r" status --porcelain 2>/dev/null | wc -l)
+    (( dirty )) && { skip "$rel" "$dirty uncommitted changes"; skip_n=$((skip_n+1)); continue; }
+
+    stashes=$(git -C "$r" stash list 2>/dev/null | wc -l)
+    (( stashes )) && { skip "$rel" "$stashes stashes"; skip_n=$((skip_n+1)); continue; }
+
+    branches=$(git -C "$r" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null | wc -l)
+    (( branches != 1 )) && { skip "$rel" "$branches local branches"; skip_n=$((skip_n+1)); continue; }
+
+    ahead=$(git -C "$r" log --oneline '@{u}..HEAD' 2>/dev/null | wc -l)
+    (( ahead )) && { skip "$rel" "$ahead unpushed commits"; skip_n=$((skip_n+1)); continue; }
+
+    upstream=$(git -C "$r" rev-parse --abbrev-ref '@{u}' 2>/dev/null) \
+        || { skip "$rel" "no upstream tracking branch"; skip_n=$((skip_n+1)); continue; }
+
+    remote="${upstream%%/*}"
+    branch=$(git -C "$r" rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+    # Already-shallow repos are NOT skipped: shallowing alone does not shrink
+    # anything while other remote refs, tags and submodules still hold objects.
+    # They just don't need the fetch again.
+    already_shallow=0
+    git -C "$r" rev-parse --is-shallow-repository 2>/dev/null | grep -q true && already_shallow=1
+
+    before=$(du -sb "$r/.git" 2>/dev/null | cut -f1)
+    total_before=$((total_before + before))
+
+    printf '  \033[1m%s\033[0m  (.git %s)\n' "$rel" "$(numfmt --to=iec "$before")"
+
+    if (( DRY_RUN )); then
+        if (( GC_ONLY )); then
+            printf '        would: git gc --prune=now --aggressive\n'
+        else
+            printf '        would: git fetch --depth=1 %s %s\n' "$remote" "$branch"
+            printf '               git reflog expire --expire=now --all\n'
+            printf '               git gc --prune=now --aggressive\n'
+        fi
+        total_after=$((total_after + before))
+        done_n=$((done_n+1))
+        continue
+    fi
+
+    if (( ! GC_ONLY )); then
+        # Needs the network. If the remote is unreachable, leave the repo
+        # untouched rather than half-truncated.
+        if (( ! already_shallow )); then
+            if ! git -C "$r" fetch --depth=1 --quiet "$remote" "$branch" 2>/dev/null; then
+                printf '        \033[33mfetch failed (remote unreachable?) — repacking only\033[0m\n'
+            fi
+        fi
+
+        # Shallowing one branch achieves nothing while OTHER remote-tracking
+        # refs still reach full history — gc cannot prune objects that are
+        # still referenced. Drop every remote ref except the one we track.
+        while IFS= read -r ref; do
+            [[ "$ref" == "refs/remotes/$remote/$branch" ]] && continue
+            [[ "$ref" == "refs/remotes/$remote/HEAD" ]] && continue
+            git -C "$r" update-ref -d "$ref" 2>/dev/null
+        done < <(git -C "$r" for-each-ref --format='%(refname)' refs/remotes 2>/dev/null)
+
+        # Tags pin history just as hard as branches do.
+        git -C "$r" tag -l | while IFS= read -r t; do
+            [[ -n "$t" ]] && git -C "$r" tag -d "$t" >/dev/null 2>&1
+        done
+    fi
+
+    git -C "$r" reflog expire --expire=now --all >/dev/null 2>&1
+    git -C "$r" gc --prune=now --aggressive --quiet >/dev/null 2>&1
+
+    # Submodules keep their own object stores under .git/modules, untouched by
+    # anything done to the parent. On wallpaperengine that was 406M of a 418M
+    # .git — the entire problem.
+    if [[ -d "$r/.git/modules" ]]; then
+        while IFS= read -r m; do
+            git --git-dir="$m" reflog expire --expire=now --all >/dev/null 2>&1
+            git --git-dir="$m" gc --prune=now --aggressive --quiet >/dev/null 2>&1
+        done < <(find "$r/.git/modules" -maxdepth 4 -name objects -type d 2>/dev/null | sed 's|/objects$||')
+    fi
+
+    after=$(du -sb "$r/.git" 2>/dev/null | cut -f1)
+    total_after=$((total_after + after))
+    done_n=$((done_n+1))
+
+    saved=$((before - after))
+    pct=0; (( before > 0 )) && pct=$(( saved * 100 / before ))
+    # numfmt reads a leading '-' as a flag, so format the sign separately.
+    if (( saved < 0 )); then
+        printf '        -> %s  (GREW by %s, %d%%)\n' \
+            "$(numfmt --to=iec "$after")" "$(numfmt --to=iec $(( -saved )))" "$(( -pct ))"
+    else
+        printf '        -> %s  (saved %s, %d%%)\n' \
+            "$(numfmt --to=iec "$after")" "$(numfmt --to=iec "$saved")" "$pct"
+    fi
+
+done < <(find "$ROOT" -maxdepth 5 -name .git -type d 2>/dev/null | sort)
+
+printf '\n'
+say "Summary"
+printf '  processed  %d repos\n' "$done_n"
+printf '  skipped    %d repos\n' "$skip_n"
+if (( DRY_RUN )); then
+    printf '  .git total %s  (run without --dry-run to shrink)\n' "$(numfmt --to=iec "$total_before")"
+else
+    printf '  .git       %s -> %s  (saved %s)\n' \
+        "$(numfmt --to=iec "$total_before")" \
+        "$(numfmt --to=iec "$total_after")" \
+        "$(numfmt --to=iec $((total_before - total_after)))"
+fi

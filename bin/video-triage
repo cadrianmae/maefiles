@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+# Interactive video triage: play each file, keep or trash it.
+#
+# Walks videos biggest-first (most space reclaimed per decision), plays each in
+# mpv, and asks. Trashing uses `gio trash`, so every decision is reversible from
+# the desktop trash until you empty it.
+#
+# Decisions are logged, so quitting and re-running resumes where you left off
+# rather than re-asking about files you already judged.
+#
+#   video-triage [DIR]          default: ~/Videos
+#   video-triage --min 500M     only files at least this big
+#   video-triage --reset        forget previous decisions and start over
+#   video-triage --dry-run      never actually trash, just record
+#   video-triage --report       print the decision log and exit
+
+set -uo pipefail
+
+readonly LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/video-triage"
+readonly LOG="$LOG_DIR/decisions.tsv"
+
+DIR="$HOME/Videos"
+MIN_BYTES=0
+DRY_RUN=0
+
+die() { printf '%s\n' "$*" >&2; exit 1; }
+
+# 500M / 1.5G / 800000 -> bytes
+to_bytes() {
+    local v="${1^^}"
+    case "$v" in
+        *K) echo $(( ${v%K} * 1024 )) ;;
+        *M) echo $(( ${v%M} * 1024 * 1024 )) ;;
+        *G) awk -v n="${v%G}" 'BEGIN{printf "%.0f", n*1073741824}' ;;
+        *)  echo "$v" ;;
+    esac
+}
+
+human() { numfmt --to=iec --suffix=B "$1" 2>/dev/null || echo "${1}B"; }
+
+report() {
+    [[ -f "$LOG" ]] || die "No decisions recorded yet."
+    local kept=0 trashed=0 kb=0 tb=0
+    while IFS=$'\t' read -r _ action bytes path; do
+        case "$action" in
+            keep)  kept=$((kept+1));    kb=$((kb+bytes)) ;;
+            trash) trashed=$((trashed+1)); tb=$((tb+bytes)) ;;
+        esac
+    done < "$LOG"
+    printf 'Kept    %4d files  %s\n' "$kept" "$(human "$kb")"
+    printf 'Trashed %4d files  %s\n' "$trashed" "$(human "$tb")"
+    printf '\nLog: %s\n' "$LOG"
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --min)     MIN_BYTES=$(to_bytes "$2"); shift 2 ;;
+        --reset)   rm -f "$LOG"; echo "Decisions cleared."; exit 0 ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --report)  report; exit 0 ;;
+        -h|--help) sed -n '2,20p' "$0" | sed 's/^# \?//'; exit 0 ;;
+        -*)        die "Unknown option: $1" ;;
+        *)         DIR="$1"; shift ;;
+    esac
+done
+
+[[ -d "$DIR" ]] || die "Not a directory: $DIR"
+command -v mpv  >/dev/null || die "mpv is required"
+command -v gio  >/dev/null || die "gio is required (for reversible trashing)"
+
+mkdir -p "$LOG_DIR"
+touch "$LOG"
+
+# Files already decided, so a re-run resumes rather than repeating.
+declare -A DECIDED=()
+while IFS=$'\t' read -r _ _ _ path; do
+    [[ -n "$path" ]] && DECIDED["$path"]=1
+done < "$LOG"
+
+# Biggest first: each decision reclaims the most possible.
+mapfile -t FILES < <(
+    find "$DIR" -type f \
+        \( -iname '*.mp4' -o -iname '*.mkv' -o -iname '*.mov' -o -iname '*.avi' \
+           -o -iname '*.webm' -o -iname '*.flv' -o -iname '*.m4v' -o -iname '*.wmv' \) \
+        -size +0c -printf '%s\t%p\n' 2>/dev/null \
+    | awk -F'\t' -v min="$MIN_BYTES" '$1 >= min' \
+    | sort -rn \
+    | cut -f2-
+)
+
+(( ${#FILES[@]} )) || die "No videos found in $DIR"
+
+total_bytes=0
+todo=()
+for f in "${FILES[@]}"; do
+    [[ -n "${DECIDED[$f]:-}" ]] && continue
+    todo+=("$f")
+    total_bytes=$(( total_bytes + $(stat -c %s "$f") ))
+done
+
+if (( ${#todo[@]} == 0 )); then
+    echo "Nothing left to review — all ${#FILES[@]} files already decided."
+    echo
+    report
+    exit 0
+fi
+
+printf '\n%s videos to review, %s total' "${#todo[@]}" "$(human "$total_bytes")"
+(( ${#FILES[@]} != ${#todo[@]} )) && printf ' (%s already decided)' "$(( ${#FILES[@]} - ${#todo[@]} ))"
+printf '\n\n'
+printf 'mpv opens each file. Close it (q) to return here and answer.\n'
+printf '  y = keep    n = trash    s = skip for now    q = quit\n\n'
+
+freed=0
+kept=0
+trashed=0
+idx=0
+
+for f in "${todo[@]}"; do
+    idx=$((idx+1))
+    [[ -f "$f" ]] || continue          # vanished since the scan
+
+    bytes=$(stat -c %s "$f")
+    mtime=$(stat -c %y "$f" | cut -d' ' -f1)
+    rel="${f#"$DIR"/}"
+
+    # ffprobe is optional dressing; never let it break the run.
+    meta=$(ffprobe -v error -select_streams v:0 \
+             -show_entries format=duration:stream=width,height \
+             -of csv=p=0:s=x "$f" 2>/dev/null | tr '\n' ' ')
+    dur=$(awk '{for(i=1;i<=NF;i++) if($i+0>0 && $i ~ /\./) print $i}' <<<"$meta" | head -1)
+    if [[ -n "$dur" ]]; then
+        dur=$(awk -v s="$dur" 'BEGIN{printf "%d:%02d", s/60, int(s)%60}')
+    else
+        dur="?"
+    fi
+    res=$(grep -oE '^[0-9]+x[0-9]+' <<<"$meta" || echo "?")
+
+    printf '\033[1m[%d/%d]\033[0m  \033[1;33m%s\033[0m  %s  %s  %s\n' \
+        "$idx" "${#todo[@]}" "$(human "$bytes")" "$mtime" "$dur" "$res"
+    printf '        %s\n' "$rel"
+
+    mpv --really-quiet --no-terminal --keep-open=no "$f" >/dev/null 2>&1
+
+    while true; do
+        read -rp "        keep? [y/n/s/q] " ans </dev/tty
+        case "${ans,,}" in
+            y)
+                printf '%s\tkeep\t%s\t%s\n' "$(date -Is)" "$bytes" "$f" >> "$LOG"
+                kept=$((kept+1))
+                printf '        \033[32mkept\033[0m\n\n'
+                break ;;
+            n)
+                if (( DRY_RUN )); then
+                    printf '        \033[35mwould trash (dry run)\033[0m\n\n'
+                elif gio trash -- "$f" 2>/dev/null; then
+                    freed=$((freed+bytes))
+                    printf '        \033[31mtrashed\033[0m — recoverable from Trash\n\n'
+                else
+                    printf '        \033[31mFAILED to trash\033[0m (permissions?) — left in place\n\n'
+                    break
+                fi
+                printf '%s\ttrash\t%s\t%s\n' "$(date -Is)" "$bytes" "$f" >> "$LOG"
+                trashed=$((trashed+1))
+                break ;;
+            s)
+                printf '        skipped\n\n'
+                break ;;
+            q)
+                printf '\n'
+                break 2 ;;
+            *)
+                printf '        y, n, s or q\n' ;;
+        esac
+    done
+done
+
+printf '\n\033[1mSession summary\033[0m\n'
+printf '  kept     %d\n' "$kept"
+printf '  trashed  %d  (%s)\n' "$trashed" "$(human "$freed")"
+printf '  log      %s\n' "$LOG"
+(( trashed > 0 )) && printf '\nNothing is gone yet — everything trashed is in the desktop Trash.\nEmpty it when you are happy: gio trash --empty\n'
