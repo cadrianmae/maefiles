@@ -623,6 +623,10 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
     rate = Rate()
     journal.write(event="start", target=str(target), label=label)
 
+    # console= matters: without it rich builds each Progress its own global
+    # Console, so two Consoles end up writing to the same terminal and the
+    # panel header is redrawn instead of updated in place — eight stacked
+    # "uploading Downloads" borders in one run.
     overall = Progress(
         TextColumn("[bold blue]{task.description}"),
         BarColumn(bar_width=None),
@@ -630,12 +634,16 @@ def upload_one(target: Path, label: str, journal: Journal) -> tuple[int, DirStat
         CountsColumn(),
         TimeRemainingColumn(),
         expand=True,
+        console=console,
+        auto_refresh=False,   # Live drives the refresh; a second timer duplicates frames
     )
     current = Progress(
         TextColumn("[dim]{task.description}"),
         BarColumn(bar_width=30, complete_style="cyan"),
         TaskProgressColumn(),
         expand=True,
+        console=console,
+        auto_refresh=False,
     )
     t_overall = overall.add_task(label, total=None)
     t_current = current.add_task("waiting...", total=100)
