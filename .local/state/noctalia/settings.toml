@@ -195,16 +195,16 @@ directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
     enabled = true
 
     [wallpaper.default]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.last]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.monitors.HDMI-A-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.monitors.eDP-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
 [widget.active_window]
 max_length = 128
