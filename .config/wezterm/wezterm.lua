@@ -26,4 +26,21 @@ config.line_height = 1.15  -- extra breathing room for sustained reading
 -- wezterm's tab bar reappear naturally the moment you start using tabs.
 config.hide_tab_bar_if_only_one_tab = true
 
+-- Alt+Enter is wezterm's only default ToggleFullScreen binding, and it swallows
+-- the <M-CR> mapping in neovim. Disable the assignment so the key encoding
+-- passes through to the running program, and move fullscreen onto F11 (wezterm
+-- has no default binding there) so the feature isn't lost.
+config.keys = {
+  {
+    key = 'Enter',
+    mods = 'ALT',
+    action = wezterm.action.DisableDefaultAssignment,
+  },
+  {
+    key = 'F11',
+    mods = 'NONE',
+    action = wezterm.action.ToggleFullScreen,
+  },
+}
+
 return config

@@ -55,6 +55,17 @@ window-rule {
     default-window-height { fixed 920; }
 }
 
+// Steam desktop notification toasts. Steam ships them as real XWayland
+// toplevels titled notificationtoasts_<N>_desktop (N increments per toast),
+// so niri centres them by default. Pin them to the top-right instead.
+// The matching Steam-side setting is Notifications.PanelPosition in
+// ~/.local/share/Steam/resource/styles/steam.styles (reset by client updates).
+window-rule {
+    match app-id="^steam$" title=r#"^notificationtoasts_\d+_desktop$"#
+    open-floating true
+    default-floating-position x=16 y=16 relative-to="top-right"
+}
+
 // Frost Noctalia's layer-shell surfaces. The bar is semi-transparent
 // (transparency_mode="soft") but niri must be told to blur behind it —
 // the ext-background-effect protocol did not trigger on its own.

@@ -1,7 +1,10 @@
 config_version = 8
 
+[audio]
+enable_sounds = true
+
 [bar.default]
-center = [ "audio_visualizer", "clock", "audio_visualizer" ]
+center = [ "clock", "audio_visualizer" ]
 end = [
     "media",
     "tray",
@@ -16,16 +19,23 @@ end = [
     "control-center",
     "session"
 ]
+margin_ends = 8
 scale = 1.1000000089406967
 start = [ "launcher", "active_window", "wallpaper", "workspaces", "mae/sysmon:sysmon" ]
 
+[control_center.calendar]
+show_week_numbers = true
+
 [dock]
 enabled = true
-icon_size = 24
+icon_size = 36
 launcher_position = "start"
 reserve_space = false
 show_dots = true
 smart_auto_hide = true
+
+[location]
+auto_locate = true
 
 [lockscreen_widgets]
 enabled = false
@@ -85,6 +95,15 @@ widget_order = [ "lockscreen-login-box@HDMI-A-1", "lockscreen-login-box@eDP-1" ]
         show_session_buttons = true
         show_weather = true
 
+[nightlight]
+enabled = true
+
+[osd]
+offset_y = 128
+orientation = "vertical"
+position = "bottom_center"
+position_vertical = "center_right"
+
 [plugins]
 enabled = [ "mae/sysmon" ]
 
@@ -104,15 +123,66 @@ enabled = [ "mae/sysmon" ]
     name = "local"
 
 [shell]
+avatar_path = "/var/lib/AccountsService/icons/cadrianmae"
 panel_anchor_bar = "default"
+polkit_agent = true
 
     [shell.panel]
     transparency_mode = "glass"
+
+    [shell.screen_corners]
+    enabled = true
+
+    [[shell.session.actions]]
+    action = "lock"
+    countdown_seconds = 0.0
+    enabled = true
+    shortcut = "1"
+    variant = "default"
+
+    [[shell.session.actions]]
+    action = "logout"
+    countdown_seconds = 0.0
+    enabled = true
+    shortcut = "2"
+    variant = "default"
+
+    [[shell.session.actions]]
+    action = "lock_and_suspend"
+    countdown_seconds = 0.0
+    enabled = true
+    shortcut = "3"
+    variant = "default"
+
+    [[shell.session.actions]]
+    action = "command"
+    command = "systemctl hibernate"
+    countdown_seconds = 0.0
+    enabled = true
+    glyph = "hibernate"
+    label = "Hibernate"
+    shortcut = "4"
+    variant = "default"
+
+    [[shell.session.actions]]
+    action = "reboot"
+    countdown_seconds = 0.0
+    enabled = true
+    shortcut = "5"
+    variant = "default"
+
+    [[shell.session.actions]]
+    action = "shutdown"
+    countdown_seconds = 0.0
+    enabled = true
+    shortcut = "6"
+    variant = "destructive"
 
 [theme]
 builtin = "Catppuccin"
 community_palette = "Oxocarbon"
 custom_palette = "Lumae-Midnight"
+mode = "dark"
 source = "custom"
 
     [theme.templates]
@@ -121,31 +191,47 @@ source = "custom"
 [wallpaper]
 directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
 
+    [wallpaper.automation]
+    enabled = true
+
     [wallpaper.default]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.last]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.monitors.HDMI-A-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
 
     [wallpaper.monitors.eDP-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
+
+[widget.active_window]
+max_length = 128
+min_length = 128
+show_empty_label = true
+title_scroll = "on_hover"
 
 [widget.audio_visualizer]
+bands = 24
 color_2 = "secondary"
+interactive = false
 mirrored = false
+width = 96
 
 [widget.brightness]
 show_label = false
 
 [widget.clock]
-format = "{:%H:%M:%S}"
+anchor = true
+format = "{:%T %W %a %-d %b} "
+tooltip_format = "{:%c}"
 
 [widget.media]
 capsule = true
-max_length = 128
+hide_when_no_media = true
+max_length = 192
+min_length = 192
 title_scroll = "always"
 
 [widget.network]

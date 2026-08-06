@@ -4,7 +4,7 @@
 	process = git-lfs filter-process
 	required = true
 [user]
-	name = Mae
+	name = Mae C.
 	email = 45900436+cadrianmae@users.noreply.github.com
 [init]
 	defaultBranch = main

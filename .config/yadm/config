@@ -7,3 +7,5 @@
 	# Use asymmetric encryption — archive can be pushed publicly and only
 	# machines with the recipient key can decrypt. Matches the git-crypt model.
 	gpg-recipient = C8ABE62412652B9E
+[credential]
+	helper = !/usr/bin/gh auth git-credential
