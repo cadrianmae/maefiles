@@ -50,6 +50,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import termios
 import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
@@ -167,6 +168,43 @@ RE_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\a]*\a")
 
 def strip_ansi(s: str) -> str:
     return RE_ANSI.sub("", s)
+
+
+class NoEcho:
+    """Stop typed keys echoing into a live display.
+
+    A keypress during an upload is echoed by the terminal straight into the
+    middle of the panel. That shifts the cursor, so the next in-place refresh
+    lands in the wrong place and rich draws a whole new panel instead of
+    updating the old one — eight stacked 'uploading Downloads' headers came
+    from exactly this, not from anything in the rendering code.
+
+    ICANON and ISIG are left alone so Ctrl-C still raises SIGINT.
+    """
+
+    def __init__(self) -> None:
+        self.fd: int | None = None
+        self.saved = None
+
+    def __enter__(self) -> NoEcho:
+        try:
+            if sys.stdin.isatty():
+                self.fd = sys.stdin.fileno()
+                self.saved = termios.tcgetattr(self.fd)
+                attrs = termios.tcgetattr(self.fd)
+                attrs[3] &= ~termios.ECHO          # lflag
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, attrs)
+        except (termios.error, ValueError, OSError):
+            self.fd = None
+        return self
+
+    def __exit__(self, *_exc) -> bool:
+        if self.fd is not None and self.saved is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.saved)
+            except (termios.error, OSError):
+                pass
+        return False
 
 
 class CountsColumn(TextColumn):
@@ -1145,8 +1183,11 @@ def main() -> int:
         return 1
 
     signal.signal(signal.SIGINT, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt))
+    # None of these commands read stdin, so echo is only ever noise — and it
+    # corrupts every live display it lands in.
     try:
-        return args.fn(args)
+        with NoEcho():
+            return args.fn(args)
     except KeyboardInterrupt:
         console.print("\n[yellow]Interrupted.[/yellow] Nothing was modified.")
         return 130
