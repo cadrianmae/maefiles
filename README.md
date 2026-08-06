@@ -1,6 +1,6 @@
 # maefiles
 
-Personal `$HOME` configuration for `cadrianmae` on Fedora 43 — managed by [yadm](https://yadm.io), with secrets backed by Bitwarden Secrets Manager + `pass`, and per-file encryption via `git-crypt`.
+Personal `$HOME` configuration for `cadrianmae` on Fedora 44 — managed by [yadm](https://yadm.io), with secrets backed by Bitwarden Secrets Manager + `pass`, and per-file encryption via `git-crypt`.
 
 ## Browse the docs
 
