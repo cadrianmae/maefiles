@@ -4,9 +4,9 @@
 input {
     keyboard {
         xkb {
-            layout "gb, us"
+            layout "ie, us"
             variant ", altgr-weur"
-            model "pc104alt"
+            model "pc105"
             options "caps:escape_shifted_capslock, eurosign:4"
         }
 

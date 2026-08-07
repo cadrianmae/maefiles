@@ -11,5 +11,19 @@
 // waybar disabled on purpose — Noctalia provides the bar. Do NOT run both.
 // spawn-at-startup "waybar"
 
+// NetworkManager secret agent. The wifi connections use psk-flags=1, meaning the
+// PSK lives in gnome-keyring rather than the .nmconnection file, and NM will not
+// connect until something offers to hand it over. Under GNOME that something is
+// gnome-shell; niri has no equivalent, which is why wifi stopped persisting after
+// the move. nm-applet registers the agent and also gives a tray menu.
+//
+// This only covers post-login. Nothing is connected at the greeter, because the
+// keyring is locked until you log in.
+//
+// Started by nm-applet.service, not spawn-at-startup, for the same reason as
+// noctalia: if the agent dies, wifi stops working with no visible cause, and
+// spawn-at-startup gives no restart and no status to check.
+// spawn-at-startup "nm-applet" "--indicator"
+
 // To run a shell command (with variables, pipes, etc.), use spawn-sh-at-startup:
 // spawn-sh-at-startup "qs -c ~/source/qs/MyAwesomeShell"
