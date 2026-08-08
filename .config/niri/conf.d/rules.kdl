@@ -78,3 +78,22 @@ layer-rule {
         blur true
     }
 }
+
+// Xwayland Video Bridge — needed to screen-share X11 apps (Discord), but it
+// opens a real, visible window titled "Wayland to X Recording bridge" that has
+// no business being on screen. Upstream's own KDE guidance is to hide it with
+// kwin rules (keep-below, skip-taskbar, 0% opacity); niri has no hide, so this
+// is the equivalent: a 1x1 fully transparent floating window parked in a corner
+// that never takes focus.
+//
+// Do NOT kill the process instead — X11 screen sharing silently stops working,
+// and the cause is not obvious months later.
+window-rule {
+    match app-id=r#"^xwaylandvideobridge$"#
+    open-floating true
+    default-floating-position x=0 y=0 relative-to="bottom-right"
+    default-column-width { fixed 1; }
+    default-window-height { fixed 1; }
+    open-focused false
+    opacity 0.0
+}
