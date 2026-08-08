@@ -100,13 +100,31 @@ if [[ -z "${BWS_ACCESS_TOKEN:-}" ]]; then
   fi
   BW_SESSION=$(bw unlock --raw)
   export BW_SESSION
+  # A valid session is 88 chars of base64. Guard it: bw CLI 2026.3.0/2026.4.1
+  # shipped a regression (bitwarden/clients#20703) where `bw unlock` returned a
+  # perfectly-shaped token but never persisted the unlocked state, so every
+  # later command silently re-prompted. Fixed in 2026.7.0 -- keep the check so
+  # the next regression is named rather than guessed at.
+  if [[ ${#BW_SESSION} -ne 88 ]]; then
+    error "bw unlock returned a ${#BW_SESSION}-char session, expected 88"
+    error "check 'bw --version'; see bitwarden/clients#20703"
+    exit 1
+  fi
   # bw sync is read-only (fetch remote → local cache); run it in dry-run too
-  bw sync >/dev/null
-  BWS_ACCESS_TOKEN=$(bw get password "$BW_TOKEN_ITEM" 2>/dev/null) || {
-    error "item not found in bw vault: '$BW_TOKEN_ITEM'"
-    error "create it with your BWS access token as the password field."
+  bw sync --session "$BW_SESSION" >/dev/null
+
+  # Do NOT swallow stderr here. It previously reported "item not found" for an
+  # item that was present the whole time -- the real error was the session
+  # regression above, and hiding bw's own message cost an hour of hunting.
+  bw_err=$(mktemp)
+  if ! BWS_ACCESS_TOKEN=$(bw get password "$BW_TOKEN_ITEM" --session "$BW_SESSION" 2>"$bw_err"); then
+    error "bw get password failed for '$BW_TOKEN_ITEM'"
+    error "if the item exists, this is NOT a missing item -- read bw's own words:"
+    sed 's/^/    /' "$bw_err" >&2
+    rm -f "$bw_err"
     bw lock; exit 1
-  }
+  fi
+  rm -f "$bw_err"
   export BWS_ACCESS_TOKEN
   run bw lock
   unset BW_SESSION
@@ -170,7 +188,20 @@ info "to opt into auto-load: run 'bin/render-env' then add 'source ~/.env' to .z
 
 # --- 7. yadm decrypt -------------------------------------------------------
 step "7/7  yadm decrypt"
-run yadm decrypt || warn "yadm decrypt failed or nothing to decrypt"
+# ADR 004 keeps .config/yadm/encrypt empty on purpose -- per-machine SSH keys
+# rather than an encrypted archive, so one machine's GPG cannot expose another's
+# SSH access. `yadm encrypt` therefore produces a 588-byte GPG wrapper around
+# ZERO bytes, and `yadm decrypt` hands tar an empty stream:
+#     tar: This does not look like a tar archive
+#     ERROR: Unable to extract encrypted files.
+# That is a no-op reporting failure, not a broken archive. Skip it unless a
+# pattern is actually active.
+if ! grep -qE '^[^#[:space:]]' "$HOME/.config/yadm/encrypt" 2>/dev/null; then
+  info "no active patterns in .config/yadm/encrypt (ADR 004: per-machine SSH keys)"
+  info "nothing to decrypt — skipping"
+else
+  run yadm decrypt || warn "yadm decrypt failed"
+fi
 
 # Clear stale flag if present
 rm -f "$HOME/.cache/yadm-secrets-stale" 2>/dev/null || true
