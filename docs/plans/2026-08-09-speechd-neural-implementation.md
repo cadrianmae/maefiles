@@ -560,7 +560,7 @@ git commit -m "feat(params): voice parsing and speechd parameter mapping"
 ### Task 4: Engine protocol, FakeEngine, and the contract suite
 
 **Files:**
-- Create: `src/speechd_neural/engines/base.py`, `tests/conftest.py`, `tests/contract.py`
+- Create: `src/speechd_neural/engines/base.py`, `tests/fakes.py`, `tests/conftest.py`, `tests/contract.py`
 - Test: `tests/test_contract_fake.py`
 
 **Interfaces:**
@@ -569,7 +569,7 @@ git commit -m "feat(params): voice parsing and speechd parameter mapping"
   - `Synthesis = tuple[int, Iterator[bytes]]` — sample rate and s16le mono PCM chunks
   - `EngineError(Exception)`
   - `Engine` Protocol: `name: str`, `available() -> bool`, `resolve(spec: str | None) -> Voice`, `synthesize(text: str, voice: Voice, p: Params) -> Synthesis`
-  - `FakeEngine(name="fake", fails=False, sample_rate=22050)` in `tests/conftest.py`
+  - `FakeEngine(name="fake", fails=False, sample_rate=22050, pcm=...)` in `tests/fakes.py`
   - `EngineContract` base class in `tests/contract.py`, subclassed by each engine's test module
 
 - [ ] **Step 1: Write the contract suite and FakeEngine**
@@ -614,9 +614,12 @@ class EngineContract:
         assert len(audio) % 2 == 0, "s16le samples are two bytes wide"
 ```
 
+`FakeEngine` lives in `tests/fakes.py`, not in `conftest.py`. Test modules
+import the class directly, and `conftest.py` only exposes it as a fixture —
+importing `conftest` by name works but reads as an antipattern.
+
 ```python
-# tests/conftest.py
-import pytest
+# tests/fakes.py
 from speechd_neural.engines.base import EngineError
 from speechd_neural.params import Voice
 
@@ -642,6 +645,12 @@ class FakeEngine:
         if self.fails:
             raise EngineError(f"{self.name} is configured to fail")
         return self._sample_rate, iter([self._pcm])
+```
+
+```python
+# tests/conftest.py
+import pytest
+from fakes import FakeEngine
 
 
 @pytest.fixture
@@ -652,7 +661,7 @@ def fake_engine():
 ```python
 # tests/test_contract_fake.py
 from contract import EngineContract
-from conftest import FakeEngine
+from fakes import FakeEngine
 
 
 class TestFakeEngineContract(EngineContract):
@@ -714,7 +723,7 @@ Expected: 5 passed.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add src/speechd_neural/engines/base.py tests/contract.py tests/conftest.py tests/test_contract_fake.py pyproject.toml
+git add src/speechd_neural/engines/base.py tests/contract.py tests/fakes.py tests/conftest.py tests/test_contract_fake.py pyproject.toml
 git commit -m "feat(engines): Engine protocol with a shared contract suite"
 ```
 
@@ -1562,7 +1571,7 @@ engine as failed.
 ```python
 # tests/test_chain.py
 import pytest
-from conftest import FakeEngine
+from fakes import FakeEngine
 from speechd_neural.chain import EngineChain, ChainExhausted
 from speechd_neural.params import Params
 
@@ -1784,6 +1793,11 @@ class EngineChain:
                 sample_rate, chunks = engine.synthesize(text, voice, p)
                 # The watchdog: a hang before the first chunk counts as a failure.
                 _, stream = _first_chunk(chunks, self._first_chunk_timeout)
+            # Deliberately broad. onnxruntime, subprocess and model loading each
+            # raise unrelated exception types, and any type that escapes here
+            # becomes silence, which is the failure this project exists to kill.
+            # KeyboardInterrupt and SystemExit derive from BaseException, so
+            # they already pass through and still stop the process.
             except Exception as exc:
                 log.warning("[WARN] engine %s failed: %s", engine.name, exc)
                 errors.append(f"{engine.name}: {exc}")
@@ -1994,7 +2008,7 @@ import json
 import socket
 import threading
 import pytest
-from conftest import FakeEngine
+from fakes import FakeEngine
 from speechd_neural.chain import EngineChain
 from speechd_neural.config import Config, CoreConfig, EngineConfig, PiperConfig, SinkConfig
 from speechd_neural.daemon import Daemon
