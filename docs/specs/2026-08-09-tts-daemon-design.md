@@ -1,27 +1,35 @@
-# Pluggable TTS daemon for speech-dispatcher
+# speechd-tts: a pluggable local TTS backend for speech-dispatcher
 
 Date: 2026-08-09
 Status: design approved, not yet implemented
-Supersedes: the ad-hoc `~/.config/speech-dispatcher/piper/` scripts
 
 ## Context
 
-Local TTS runs through speech-dispatcher with a `sd_generic` module
-(`piper-generic`) that shells out to `piper/run.sh`, which talks to a persistent
-`piper/daemon.py` over a Unix socket, falling back to the `piper` CLI when the
-socket is absent.
+speech-dispatcher can drive an arbitrary synthesiser through its `sd_generic`
+module, but doing so well is awkward. A naive `sd_generic` wrapper spawns the
+synthesiser once per utterance, which for a neural TTS model means reloading
+several hundred megabytes of ONNX weights every time somebody speaks a sentence.
 
-It works, but its behaviour is unpredictable in practice: sometimes fast,
-sometimes slow, and when it breaks it breaks silently. This design fixes the
-predictability, and factors the code so a second engine (espeak-ng today,
-kokoro later) can be plugged in without touching the rest.
+The usual workaround is a persistent daemon holding the model in memory, with
+the `sd_generic` command acting as a thin client. That workaround is what this
+project generalises: a resident daemon, a pluggable engine layer so the
+synthesiser can be swapped (piper, espeak-ng, others), and predictable failure
+behaviour so a broken backend degrades audibly rather than going silent.
 
 This is project A of two. Project B, notification TTS, is a separate spec built
 on top of this one.
 
+## Prior art being replaced
+
+The design starts from a working but ad-hoc implementation: an `sd_generic`
+module invoking a bash runner, which talks to a persistent piper daemon over a
+Unix socket and falls back to the piper CLI when the socket is absent. It works,
+but its behaviour is unpredictable in practice: sometimes fast, sometimes slow,
+and when it breaks it breaks silently.
+
 ## Measured behaviour (2026-08-09)
 
-Diagnostics run against the live system, not assumptions:
+Diagnostics run against the live implementation, not assumptions:
 
 | Observation | Measurement |
 | --- | --- |
@@ -29,7 +37,7 @@ Diagnostics run against the live system, not assumptions:
 | Warm start (model cached) | 0.69 s |
 | Daemon idle timeout | 300 s, so sporadic use is nearly always cold |
 | Long paragraph (392 chars) | spoken in full, 18.66 s, no truncation |
-| Cancel (`spd-say -C`) mid-speech | clean; no orphaned `paplay` or piper processes |
+| Cancel (`spd-say -C`) mid-speech | clean; no orphaned `paplay` or synth processes |
 | Concurrency | speech-dispatcher serialises; the daemon never sees parallel requests |
 
 SSIP priority semantics, measured with a burst of three messages:
@@ -43,7 +51,7 @@ SSIP priority semantics, measured with a burst of three messages:
 
 Two conclusions worth recording, because they contradict the first-pass audit:
 
-- The daemon's serial accept loop is **not** a real defect. speech-dispatcher
+- A serial accept loop in the daemon is **not** a real defect. speech-dispatcher
   serialises upstream, so concurrent requests do not arise.
 - Cancellation is **not** a real defect. It already cleans up correctly.
 
@@ -54,21 +62,22 @@ The genuine defects are below.
 1. **Cold-start latency dominates.** A 300 s idle timeout against sporadic use
    means most utterances pay 5.3 s instead of 0.7 s. This is the main source of
    the "sometimes it works, sometimes it doesn't" feeling.
-2. **Update fragility.** `piper-daemon.service` hardcodes `python3.14` in
-   `LD_LIBRARY_PATH`, and `~/.cache/piper-ld-path` caches the same paths. A
-   Fedora python bump silently removes the CUDA libs from the search path.
-3. **No CPU fallback.** `run.sh` passes `--cuda` on the fallback path too, so a
-   CUDA failure takes out both the daemon and its fallback.
-4. **Failures are silent.** Logs go to `/tmp/piper-daemon.log` (unbounded, lost
-   on reboot) rather than the journal, and `run.sh` exits 0 in the noblock path
+2. **Update fragility.** The systemd unit hardcodes a python minor version in
+   `LD_LIBRARY_PATH` to reach the CUDA libraries shipped in the `nvidia` wheels,
+   and a cache file records the same paths. A distribution python bump silently
+   removes the CUDA libraries from the search path.
+3. **No CPU fallback.** The CLI fallback path also requests CUDA, so a CUDA
+   failure takes out both the daemon and its fallback.
+4. **Failures are silent.** Logs go to a file under `/tmp` (unbounded, lost on
+   reboot) rather than the journal, and the runner exits 0 on its detached path
    regardless of outcome, hiding failures from speech-dispatcher.
-5. **Duplicated pipeline.** `run.sh` reimplements roughly 100 lines of the
-   synthesis/playback pipeline that `client.py` already implements. Two copies
-   that drift.
-6. **No plug point.** The engine is piper, hardcoded. espeak-ng and kokoro
-   cannot be selected.
-7. **Hardcoded constants.** `0.6` length scale, `40000` volume, and absolute
-   `/home/cadrianmae/...` paths are embedded in code.
+5. **Duplicated pipeline.** The bash runner reimplements roughly 100 lines of
+   the synthesis and playback pipeline that the socket client already
+   implements. Two copies that drift.
+6. **No plug point.** The engine is hardcoded. Other synthesisers cannot be
+   selected.
+7. **Hardcoded constants.** Length scale, playback volume and absolute
+   `$HOME`-prefixed paths are embedded in code.
 8. **No tests.**
 
 ## Approach
@@ -77,7 +86,7 @@ Three options were considered:
 
 1. Patch the existing scripts in place. Smallest diff, but leaves the duplicated
    bash pipeline to drift.
-2. **Collapse into a single Python component set with an engine interface.**
+2. **Collapse into a single python component set with an engine interface.**
    Chosen.
 3. Write a native speech-dispatcher output module speaking the module protocol
    instead of using `sd_generic`.
@@ -106,7 +115,7 @@ speech-dispatcher            queueing, priority, cancel (upstream, works)
   [ core ]       daemon      model cache, idle lifetime, socket
         |
         v
-  [ engine ]     Engine      piper | espeak | (kokoro later)
+  [ engine ]     Engine      piper | espeak | others
         |
         v
   [ sink ]       sink        playback, volume, pitch
@@ -121,38 +130,36 @@ Four boundaries, each independently testable:
 - **engine** exposes `synthesize()` returning a sample rate and an iterator of
   s16le PCM chunks. One class per backend.
 - **sink** owns playback and the volume/pitch mapping, shared by all engines, so
-  espeak inherits the existing volume mapping unchanged.
+  every engine inherits the same volume behaviour.
 
-`run.sh`'s duplicated CLI pipeline is deleted. The fallback becomes engine
-selection rather than a second copy of the pipeline.
+The duplicated CLI pipeline is deleted. The fallback becomes engine selection
+rather than a second copy of the pipeline.
 
 ## Layout
 
+Installed layout, XDG-conformant:
+
 ```
-~/.local/libexec/tts/
-    run              front-end, sd_generic entry point (replaces run.sh)
+$HOME/.local/libexec/speechd-tts/
+    run              front-end, sd_generic entry point
     daemon.py        core: socket, model cache, idle lifetime
-    client.py        core: socket client (kept, trimmed)
+    client.py        core: socket client
     sink.py          playback, volume, pitch
     engines/
         base.py      Engine protocol
         piper.py     ONNX, CUDA -> CPU fallback
         espeak.py    subprocess
-~/.config/tts/config.toml
-~/.config/systemd/user/tts-daemon.{service,socket}
-~/bin/tts            CLI: warm | status | say | test | engines
-~/scripts/tts/       pytest suite
+$HOME/.config/speechd-tts/config.toml
+$HOME/.config/systemd/user/speechd-tts.{service,socket}
+$HOME/.local/bin/speechd-tts     CLI: warm | status | say | test | engines
 ```
 
-Layout follows existing conventions: `~/.local/libexec/` for internal service
-helpers, `~/bin/` for user-facing scripts, and tests under `~/scripts/<topic>/`
-as `memory-notify` does.
+`$HOME/.local/libexec/` holds the internal service helpers, which are not
+intended to be invoked directly; only the CLI goes on `PATH`.
 
-Every component is python, including `run` and the `tts` CLI. The current split
-between bash (`run.sh`) and python (`client.py`, `daemon.py`) is what allowed
-the pipeline to be implemented twice; a single language removes that, and lets
-one pytest suite cover the whole stack. No name conflicts exist for `tts` or
-`~/.config/tts/`.
+Every component is python, including `run` and the CLI. The prior bash/python
+split is what allowed the pipeline to be implemented twice; a single language
+removes that, and lets one pytest suite cover the whole stack.
 
 ## Engine interface
 
@@ -165,12 +172,12 @@ class Engine(Protocol):
     # Synthesis = (sample_rate: int, chunks: Iterator[bytes])   # s16le mono
 ```
 
-Everything downstream consumes `Synthesis`, keeping `sink.py` engine-agnostic.
-Adding kokoro later means one new file implementing four methods.
+Everything downstream consumes `Synthesis`, keeping the sink engine-agnostic.
+Adding an engine means one new file implementing four methods.
 
 ## Configuration
 
-`tomllib` is used, which is stdlib on python 3.14, so no new dependency.
+`tomllib` is used, which is stdlib from python 3.11, so no new dependency.
 
 ```toml
 [core]
@@ -194,40 +201,38 @@ base_volume = 40000
 `AddVoice` lines stay in the speech-dispatcher module config. That is speechd's
 own voice registry and is not duplicated here.
 
-The module is renamed `piper-generic` -> `mae-tts`, since it is no longer
-piper-specific. Only `speechd.conf` names the module; nvim and other callers use
-the default module, so this is a one-line change.
+The speech-dispatcher module is named `speechd-tts`.
 
 ## Failure handling
 
 The governing principle: **never fail silently, always degrade to some speech.**
 
-1. **Re-exec instead of a version pin.** The hardcoded `python3.14`
-   `Environment=` lines are removed from the unit and `~/.cache/piper-ld-path`
-   is deleted, since a stale cache is itself a failure mode. The daemon derives
-   the nvidia lib paths at startup by globbing `site-packages/nvidia/*/lib`, and
-   if they are absent from its own environment it `execve`s itself once with a
-   corrected environment. This survives any python version bump.
+1. **Re-exec instead of a version pin.** No python version is hardcoded and no
+   path cache is kept, since a stale cache is itself a failure mode. The daemon
+   derives the nvidia library paths at startup by globbing
+   `site-packages/nvidia/*/lib`, and if they are absent from its own environment
+   it `execve`s itself once with a corrected environment. This survives any
+   python version bump.
 2. **Device fallback.** `device = "auto"` tries CUDA and falls back to
    `CPUExecutionProvider` on session-creation failure, logging a warning and
    remembering the choice for the session.
 3. **Engine fallback chain.** When the default engine fails, the engines in
    `engine.fallback` are tried in order.
 4. **Degradation is announced once per session.** Falling back to CPU or to
-   espeak fires a desktop notification, e.g. "TTS degraded: piper -> espeak
-   (model load failed)". This is the direct fix for not knowing when the system
-   has broken.
-5. **`tts status` and `tts test`.** `status` reports engine, device, cached
+   another engine fires a desktop notification, e.g. "TTS degraded: piper ->
+   espeak (model load failed)". This is the direct fix for not knowing when the
+   system has broken.
+5. **`status` and `test` subcommands.** `status` reports engine, device, cached
    models, daemon uptime and last error. `test` runs every engine against every
    device and prints an OK/FAIL table.
-6. **Journal logging.** stderr to `journalctl --user -u tts-daemon`, replacing
-   `/tmp/piper-daemon.log` and `/tmp/piper-debug.log`.
+6. **Journal logging.** stderr to `journalctl --user -u speechd-tts`, replacing
+   the `/tmp` log files.
 7. **Fail loud.** The front-end exits non-zero when nothing was spoken.
 8. **Synth watchdog.** If no PCM arrives within a timeout, the attempt is
    aborted and the fallback chain continues, converting a hang into a fallback.
 
-This makes espeak-ng load-bearing, so its own health matters; `tts test` covers
-it.
+This makes the fallback engine load-bearing, so its own health matters; `test`
+covers it.
 
 ## Testing
 
@@ -246,12 +251,12 @@ testing.
 | daemon socket | `FakeEngine` emitting known PCM; asserts header magic, sample rate, byte-exact payload | no |
 | sink | file sink; asserts bytes, and that sox is only invoked above the pitch threshold | no |
 | engine contract suite | shared parametrised suite every engine must pass | espeak no, piper `@pytest.mark.gpu` |
-| end-to-end | `tts test`, real audio, run by hand | yes |
+| end-to-end | `test` subcommand, real audio, run by hand | yes |
 
-The contract suite is the payoff of the plug design: a future kokoro engine is
-proven by running the existing suite against it, with no new test code.
+The contract suite is the payoff of the plug design: a future engine is proven
+by running the existing suite against it, with no new test code.
 
-Regression tests for the defects found on 2026-08-09:
+Regression tests for the defects measured on 2026-08-09:
 
 - the front-end exits non-zero when nothing was spoken
 - stale or missing CUDA paths produce CPU fallback, not silence
@@ -260,29 +265,41 @@ Regression tests for the defects found on 2026-08-09:
 Deliberately not covered: speech-dispatcher's own queueing and priority
 behaviour. That is upstream's, and the measurements above confirm it works.
 
+## Distribution
+
+The project is intended for release, so the source lives in a git repository and
+the layout above is an *install target*, not the working tree. Installation
+symlinks or copies into the XDG paths and installs the speech-dispatcher module
+config; uninstallation reverses it. Nothing is written outside `$HOME`.
+
+Consequences for the design: no absolute paths to a particular user's home may
+appear in code or config defaults, the config file must be optional with working
+defaults, and the systemd units must be templated at install time rather than
+shipped with paths baked in.
+
 ## Migration and rollback
 
-The new stack is installed alongside the old one rather than replacing it in
-place, so the cutover is a single config line and the rollback is the same line
-reversed.
+For an existing ad-hoc setup, the new stack installs alongside the old one
+rather than replacing it in place, so the cutover is a single config line and
+the rollback is the same line reversed.
 
-1. Build `~/.local/libexec/tts/` and `~/.config/tts/config.toml` while
-   `piper-generic` remains the default module. Nothing changes for daily use.
-2. Add the `mae-tts` module config and its systemd units. Verify with
-   `spd-say -o mae-tts` and `tts test` while `piper-generic` still works.
-3. Cut over by pointing `DefaultModule` in `speechd.conf` at `mae-tts`.
-4. Soak. Rollback at any point is reverting `DefaultModule` to `piper-generic`,
-   which is left untouched throughout.
-5. Only after the soak: remove `~/.config/speech-dispatcher/piper/`, the
-   `piper-daemon` units, the `piper-generic` module config, and the stale
-   `~/.cache/piper-ld-path` and `~/.cache/piper-sr-*` caches.
+1. Install `speechd-tts` while the existing module remains the default. Nothing
+   changes for daily use.
+2. Add the `speechd-tts` module config and its systemd units. Verify with
+   `spd-say -o speechd-tts` and the `test` subcommand while the old module still
+   works.
+3. Cut over by pointing `DefaultModule` in `speechd.conf` at `speechd-tts`.
+4. Soak. Rollback at any point is reverting `DefaultModule`, which is left
+   untouched throughout.
+5. Only after the soak: remove the old scripts, units, module config and cache
+   files.
 
-The old `piper-daemon.socket` and the new `tts-daemon.socket` use different
-socket paths, so both can be installed at once without conflict.
+The old and new sockets use different paths, so both can be installed at once
+without conflict.
 
 ## Out of scope
 
 - Notification TTS. Separate spec (project B), built on this.
-- A kokoro engine. The interface admits one; it is not implemented here. Kokoro
-  currently exists only inside the speaches container in `open-notebook-stack`.
+- Engines beyond piper and espeak-ng. The interface admits them; none are
+  implemented here.
 - A native speech-dispatcher output module (option 3), deferred as above.
