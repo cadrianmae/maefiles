@@ -72,6 +72,37 @@ case "${1:-}" in
         read -rp "throw away all decisions? [y/N] " a
         [[ "$a" == [yY] ]] && : > "$DECISIONS" && echo "reset"
         exit 0 ;;
+    --preview|--groups)
+        # Read a whole group before committing to a bulk A/D on it. Shows only
+        # what is still undecided, because that is what A/D would act on.
+        filter="${2:-}"
+        awk -F'\t' -v D="$DECISIONS" -v FILT="$filter" \
+            -v B="$B" -v R="$R" -v DIM="$DIM" -v RED="$RED" '
+            FILENAME == D { seen[$1] = 1; next }
+            /^## / {
+                g = $0; sub(/^## /, "", g); sub(/ *\([^)]*\)$/, "", g)
+                grp = g; next
+            }
+            /^[a-zA-Z0-9]/ {
+                split($0, f, " ")
+                if (f[1] in seen) next
+                if (FILT != "" && index(tolower(grp), tolower(FILT)) == 0) next
+                line = $0
+                sub(/^[^ ]+ +# ?/, "", line)
+                out[grp] = out[grp] sprintf("  %-34s %s\n", f[1], line)
+                n[grp]++
+                order[grp] = (grp in order) ? order[grp] : ++seq
+            }
+            END {
+                for (g in out) idx[order[g]] = g
+                for (i = 1; i <= seq; i++) {
+                    g = idx[i]; if (g == "") continue
+                    printf "\n%s▌ %s%s  %s(%s undecided)%s\n\n", B, g, R, DIM, n[g], R
+                    printf "%s", out[g]
+                }
+                printf "\n"
+            }' "$DECISIONS" "$LIST"
+        exit 0 ;;
 esac
 
 # --- the queue: undecided packages, in list order ----------------------------
@@ -131,6 +162,7 @@ ${B}pkg-triage${R} — ${#QUEUE[@]} left of $total
   ${GRN}a${R} approve, install it        ${RED}d${R} deny, leave it out
   ${YEL}?${R} flag a question           ${CYN}c${R} approve with a comment
   ${DIM}s${R} skip, decide later        ${MAG}A${R}/${MAG}D${R} approve/deny the rest of this group
+  ${B}P${R} preview rest of group
   ${B}u${R} undo the last one          ${B}q${R} save and quit
 
 EOF
@@ -183,6 +215,24 @@ for line in "${QUEUE[@]}"; do
                printf '      %sapproving the rest of "%s"%s\n' "$GRN" "$grp" "$R"; break ;;
             D) record "$pkg" deny; skip_group="$grp"; skip_action=deny
                printf '      %sdenying the rest of "%s"%s\n' "$RED" "$grp" "$R"; break ;;
+            P|p) # Read the rest of this group before committing to a bulk A/D.
+                # Everything from the current position onward in the same group
+                # is still pending, so that is exactly what A/D would cover.
+                printf '\n%s▌ still to come in "%s"%s\n\n' "$B" "$grp" "$R"
+                shown=0
+                for j in $(seq "$i" "${#QUEUE[@]}"); do
+                    jline=${QUEUE[$((j - 1))]}
+                    jpkg=${jline%% *}
+                    [[ ${GRPMAP[$jpkg]:-} == "$grp" ]] || continue
+                    jsum=${jline#*# }
+                    [[ "$jsum" == "$jline" ]] && jsum=""
+                    jsum=${jsum#PRUNE — }
+                    printf '  %-34s %s%s%s\n' "$jpkg" "$DIM" "$jsum" "$R"
+                    shown=$((shown + 1))
+                done
+                printf '\n%s  %s package%s — A/D here decides all of them%s\n\n' \
+                    "$DIM" "$shown" "$( (( shown == 1 )) || echo s )" "$R"
+                ;;
             u) if [[ -n "$last_pkg" ]]; then
                    grep -v -P "^\Q$last_pkg\E\t" "$DECISIONS" > "$DECISIONS.tmp" 2>/dev/null \
                      && mv "$DECISIONS.tmp" "$DECISIONS"
@@ -193,7 +243,7 @@ for line in "${QUEUE[@]}"; do
                fi ;;
             q) echo; counts; echo; echo "resume any time: pkg-triage"; exit 0 ;;
             ''|$'\n'|$'\r') ;;   # stray newline (piped input) — just re-prompt
-            *) printf '      a d s ? c A D u q\n' ;;
+            *) printf '      a d s ? c A D P u q\n' ;;
         esac
     done
     echo
