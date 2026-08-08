@@ -22,14 +22,19 @@ install: build
     @echo "[OK] installed and restarted"
 
 # Install the udev rule granting evdev read access, then reload udev.
-# Needs root, prompting graphically via ksshaskpass. Idempotent: safe to rerun.
+# Needs root and prompts on the terminal. Idempotent: safe to rerun.
+#
+# Was `sudo -A` with SUDO_ASKPASS=/usr/bin/ksshaskpass. That is KDE tooling and
+# went with the move to niri, so the target failed outright. A graphical askpass
+# buys nothing here anyway -- this is only ever run from a terminal, which sudo
+# can prompt on directly. (openssh-askpass is the GTK equivalent if one is ever
+# wanted.)
 udev-install:
     #!/usr/bin/env bash
     set -euo pipefail
-    export SUDO_ASKPASS=/usr/bin/ksshaskpass
-    sudo -A install -Dm644 99-keychron-ptt.rules /etc/udev/rules.d/99-keychron-ptt.rules
-    sudo -A udevadm control --reload-rules
-    sudo -A udevadm trigger --subsystem-match=input
+    sudo install -Dm644 99-keychron-ptt.rules /etc/udev/rules.d/99-keychron-ptt.rules
+    sudo udevadm control --reload-rules
+    sudo udevadm trigger --subsystem-match=input
     echo "[OK] rule installed; checking access"
     just udev-check
 

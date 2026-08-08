@@ -111,6 +111,12 @@ EXCLUDES = [
     ".local/share/Trash",
     # Would archive its own output.
     "backup-staging",
+    # Holds an Anthropic API key in PLAINTEXT. The 2026-08-03 archive shipped
+    # one to Proton Drive because this line did not exist, and the key had to be
+    # rotated. Only this file is excluded -- .claude/projects/ holds the memory
+    # files, which are gitignored twice over and exist NOWHERE ELSE but the
+    # archive, so excluding the whole directory would silently lose them.
+    ".claude/config.json",
 ]
 
 LOG_DIR = Path(os.environ.get("XDG_STATE_HOME", HOME / ".local/state")) / "home-backup"
