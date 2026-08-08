@@ -8,6 +8,18 @@ environment {
     // ELECTRON_OZONE_PLATFORM_HINT "auto"
 }
 
+// Cursor. niri exports XCURSOR_THEME and XCURSOR_SIZE to every client from
+// this block, and with no block it exports "default" -- which overrode the
+// Posy_Cursor set in gsettings and gtk-3.0/settings.ini, so the pointer stayed
+// the stock Adwaita one everywhere despite the theme being installed.
+//
+// The theme lives in ~/.icons/Posy_Cursor (user-local, not packaged).
+// Size 32 matches gtk-cursor-theme-size in gtk-3.0/settings.ini.
+cursor {
+    xcursor-theme "Posy_Cursor"
+    xcursor-size 32
+}
+
 hotkey-overlay {
     // Uncomment this line to disable the "Important Hotkeys" pop-up at startup.
     // skip-at-startup
