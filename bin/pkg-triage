@@ -58,9 +58,32 @@ case "${1:-}" in
         printf 'decided %s of %s\n' "$done_n" "$total"
         exit 0 ;;
     --install)
-        pkgs=$(final_list approve | tr '\n' ' ')
-        [[ -n "${pkgs// }" ]] || { echo "nothing approved yet"; exit 0; }
-        echo "sudo dnf install $pkgs"
+        # Approved packages whose note starts with MANUAL: are NOT put in the
+        # dnf line. Some need a flag (R pulls 262 texlive packages as a weak
+        # dependency), and some are not in any repo at all -- both would either
+        # install the wrong thing or abort the whole transaction on an
+        # unmatched name.
+        auto=""; manual=""
+        while read -r p; do
+            [[ -n "$p" ]] || continue
+            note=$(note_of "$p")
+            if [[ "$note" == MANUAL:* ]]; then
+                manual+=$(printf '  %-28s %s\n' "$p" "${note#MANUAL: }")$'\n'
+            else
+                auto+="$p "
+            fi
+        done < <(final_list approve)
+
+        if [[ -n "${auto// }" ]]; then
+            echo "sudo dnf install $auto"
+        else
+            echo "# nothing to install via plain dnf"
+        fi
+
+        if [[ -n "$manual" ]]; then
+            printf '\n%sThese are approved but need handling of their own:%s\n' "$YEL" "$R"
+            printf '%s' "$manual"
+        fi
         exit 0 ;;
     --questions)
         while read -r p; do
