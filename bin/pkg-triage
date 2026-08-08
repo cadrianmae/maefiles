@@ -1,0 +1,208 @@
+#!/usr/bin/env bash
+# Walk a prune list one package at a time and decide what to do with each.
+#
+# Reviewing 436 packages in an editor means holding the whole list in your head.
+# This shows one at a time with its summary and the recommendation, takes a
+# single keypress, and remembers where you were — so it can be done in a few
+# sittings rather than one.
+#
+#   pkg-triage                 start or resume
+#   pkg-triage --status        counts so far, no prompting
+#   pkg-triage --install       print the dnf command for everything approved
+#   pkg-triage --questions     list what you flagged to ask about
+#   pkg-triage --reset         throw away all decisions
+#
+# Decisions live in ~/.local/state/pkg-triage/decisions.tsv and are written as
+# you go, so Ctrl-C never loses more than the current package.
+
+set -uo pipefail
+
+readonly LIST="${PKG_TRIAGE_LIST:-$HOME/prune-list.txt}"
+readonly STATE="${XDG_STATE_HOME:-$HOME/.local/state}/pkg-triage"
+readonly DECISIONS="$STATE/decisions.tsv"
+
+mkdir -p "$STATE"
+[[ -f "$DECISIONS" ]] || : > "$DECISIONS"
+[[ -f "$LIST" ]] || { echo "no list at $LIST" >&2; exit 1; }
+
+# --- colour, but only when a terminal is watching ----------------------------
+if [[ -t 1 ]]; then
+    B=$'\e[1m'; DIM=$'\e[2m'; R=$'\e[0m'
+    GRN=$'\e[32m'; RED=$'\e[31m'; YEL=$'\e[33m'; CYN=$'\e[36m'; MAG=$'\e[35m'
+else
+    B=""; DIM=""; R=""; GRN=""; RED=""; YEL=""; CYN=""; MAG=""
+fi
+
+decision_of() { awk -F'\t' -v p="$1" '$1==p{d=$2} END{print d}' "$DECISIONS"; }
+note_of()     { awk -F'\t' -v p="$1" '$1==p{n=$3} END{print n}' "$DECISIONS"; }
+record()      { printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "$DECISIONS"; }
+
+# Latest decision per package wins, so a change of mind just appends.
+final_list() { # $1 = decision to filter for
+    awk -F'\t' '{d[$1]=$2} END{for (p in d) if (d[p]==DEC) print p}' DEC="$1" "$DECISIONS" | sort
+}
+
+counts() {
+    local a d q s
+    a=$(final_list approve | grep -c .); d=$(final_list deny | grep -c .)
+    q=$(final_list question | grep -c .); s=$(final_list skip | grep -c .)
+    printf '%sapproved%s %s   %sdenied%s %s   %sflagged%s %s   %sskipped%s %s\n' \
+        "$GRN" "$R" "$a" "$RED" "$R" "$d" "$YEL" "$R" "$q" "$DIM" "$R" "$s"
+}
+
+case "${1:-}" in
+    --status)
+        counts
+        total=$(grep -cE '^[a-zA-Z0-9]' "$LIST")
+        done_n=$(awk -F'\t' '{d[$1]=1} END{print length(d)}' "$DECISIONS")
+        printf 'decided %s of %s\n' "$done_n" "$total"
+        exit 0 ;;
+    --install)
+        pkgs=$(final_list approve | tr '\n' ' ')
+        [[ -n "${pkgs// }" ]] || { echo "nothing approved yet"; exit 0; }
+        echo "sudo dnf install $pkgs"
+        exit 0 ;;
+    --questions)
+        while read -r p; do
+            [[ -n "$p" ]] || continue
+            printf '%s%-34s%s %s\n' "$YEL" "$p" "$R" "$(note_of "$p")"
+        done < <(final_list question)
+        exit 0 ;;
+    --reset)
+        read -rp "throw away all decisions? [y/N] " a
+        [[ "$a" == [yY] ]] && : > "$DECISIONS" && echo "reset"
+        exit 0 ;;
+esac
+
+# --- the queue: undecided packages, in list order ----------------------------
+# One pass, not one awk per package — 436 subprocesses took visible seconds.
+# FILENAME test, not NR==FNR: with an empty decisions file the latter is true
+# for the list too, and the queue comes out empty.
+mapfile -t QUEUE < <(
+    awk -F'\t' -v D="$DECISIONS" '
+        FILENAME == D { seen[$1] = 1; next }
+        /^[a-zA-Z0-9]/ { split($0, f, " "); if (!(f[1] in seen)) print }' \
+        "$DECISIONS" "$LIST"
+)
+
+total=$(grep -cE '^[a-zA-Z0-9]' "$LIST")
+if (( ${#QUEUE[@]} == 0 )); then
+    echo "everything decided."
+    counts
+    echo
+    echo "next:  pkg-triage --install"
+    exit 0
+fi
+
+# Package -> group, built in ONE pass. This used to be an awk per package, which
+# meant one subprocess per item and a visible stall on a 400-package list.
+declare -A GRPMAP
+while IFS=$'\t' read -r _n _g; do GRPMAP[$_n]=$_g; done < <(
+    awk '/^## /{g=$0; sub(/^## /,"",g); sub(/ *\([^)]*\)$/,"",g)}
+         /^[a-zA-Z0-9]/{split($0,f," "); print f[1]"\t"g}' "$LIST"
+)
+
+# How many still-undecided packages sit in each group, so the banner can say
+# "23 left in this group" rather than just naming it.
+declare -A GRPLEFT
+for _line in "${QUEUE[@]}"; do
+    _p=${_line%% *}
+    _g=${GRPMAP[$_p]:-"(ungrouped)"}
+    GRPLEFT[$_g]=$(( ${GRPLEFT[$_g]:-0} + 1 ))
+done
+
+banner() { # $1 = group name
+    local g=$1 n=${GRPLEFT[$1]:-0} rule
+    # NOT `printf '%*s' 68 '' | tr ' ' '─'` -- tr works on bytes and the box
+    # character is 3 of them, so that emits 68 bytes of mangled UTF-8.
+    printf -v rule '%.0s─' {1..68}
+    printf '\n%s%s%s\n' "$DIM" "$rule" "$R"
+    printf '%s▌ %s%s\n' "$B" "$g" "$R"
+    printf '%s▌ %s package%s in this group%s\n' \
+        "$DIM" "$n" "$( (( n == 1 )) || echo s )" "$R"
+    # A/D act on the REST of the current group, so say so where it is relevant.
+    (( n > 1 )) && printf '%s▌ A / D applies to all %s%s\n' "$DIM" "$n" "$R"
+    printf '%s%s%s\n\n' "$DIM" "$rule" "$R"
+}
+
+cat <<EOF
+${B}pkg-triage${R} — ${#QUEUE[@]} left of $total
+
+  ${GRN}a${R} approve, install it        ${RED}d${R} deny, leave it out
+  ${YEL}?${R} flag a question           ${CYN}c${R} approve with a comment
+  ${DIM}s${R} skip, decide later        ${MAG}A${R}/${MAG}D${R} approve/deny the rest of this group
+  ${B}u${R} undo the last one          ${B}q${R} save and quit
+
+EOF
+
+i=0; last_pkg=""; skip_group=""; skip_action=""; prev_grp=""
+for line in "${QUEUE[@]}"; do
+    i=$((i + 1))
+    pkg=${line%% *}
+    summ=${line#*# }
+    [[ "$summ" == "$line" ]] && summ=""
+    grp=${GRPMAP[$pkg]:-"(ungrouped)"}
+
+    # honour an earlier A/D that covered this whole group
+    if [[ -n "$skip_group" && "$grp" == "$skip_group" ]]; then
+        record "$pkg" "$skip_action" "bulk: rest of group"
+        continue
+    fi
+
+    # Crossing into a new group is the moment the rules change -- a bulk D that
+    # was right for a block of libraries is wrong for the block of applications
+    # that follows. Make it impossible to miss.
+    if [[ "$grp" != "$prev_grp" ]]; then
+        banner "$grp"
+        prev_grp="$grp"
+    fi
+
+    rec=""; reccol="$R"
+    if [[ "$summ" == PRUNE* ]]; then
+        rec="recommend DENY"; reccol="$RED"; summ=${summ#PRUNE — }
+    fi
+
+    # The group is on the banner above, so it is not repeated per package.
+    printf '%s[%s/%s]%s %s%s%s\n' \
+        "$DIM" "$i" "${#QUEUE[@]}" "$R" "$B" "$pkg" "$R"
+    [[ -n "$summ" ]] && printf '      %s\n' "$summ"
+    [[ -n "$rec"  ]] && printf '      %s%s%s\n' "$reccol" "$rec" "$R"
+
+    while true; do
+        printf '   %s> %s' "$B" "$R"
+        IFS= read -rsn1 key; echo
+        case "$key" in
+            a) record "$pkg" approve;  last_pkg="$pkg"; break ;;
+            d) record "$pkg" deny;     last_pkg="$pkg"; break ;;
+            s) record "$pkg" skip;     last_pkg="$pkg"; break ;;
+            \?) printf '      question: '; IFS= read -r note
+                record "$pkg" question "$note"; last_pkg="$pkg"; break ;;
+            c) printf '      comment: '; IFS= read -r note
+               record "$pkg" approve "$note"; last_pkg="$pkg"; break ;;
+            A) record "$pkg" approve; skip_group="$grp"; skip_action=approve
+               printf '      %sapproving the rest of "%s"%s\n' "$GRN" "$grp" "$R"; break ;;
+            D) record "$pkg" deny; skip_group="$grp"; skip_action=deny
+               printf '      %sdenying the rest of "%s"%s\n' "$RED" "$grp" "$R"; break ;;
+            u) if [[ -n "$last_pkg" ]]; then
+                   grep -v -P "^\Q$last_pkg\E\t" "$DECISIONS" > "$DECISIONS.tmp" 2>/dev/null \
+                     && mv "$DECISIONS.tmp" "$DECISIONS"
+                   printf '      %sundid %s — it will come back next run%s\n' "$YEL" "$last_pkg" "$R"
+                   last_pkg=""
+               else
+                   printf '      nothing to undo\n'
+               fi ;;
+            q) echo; counts; echo; echo "resume any time: pkg-triage"; exit 0 ;;
+            ''|$'\n'|$'\r') ;;   # stray newline (piped input) — just re-prompt
+            *) printf '      a d s ? c A D u q\n' ;;
+        esac
+    done
+    echo
+done
+
+echo
+counts
+echo
+echo "install what you approved:"
+echo "  sudo dnf install \$(pkg-triage --install | cut -d' ' -f4-)"
+echo
+echo "questions you flagged:  pkg-triage --questions"
