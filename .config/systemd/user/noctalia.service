@@ -8,6 +8,14 @@ Documentation=https://docs.noctalia.dev
 BindsTo=niri.service
 After=niri.service
 
+# Order after the audio stack. On 2026-08-08 noctalia and wireplumber both
+# started at 21:23:27 and noctalia's audio service never bound: `noctalia msg
+# volume-set 60` returned "ok" and changed nothing, and no volume OSD appeared.
+# Restarting noctalia fixed it immediately, which is the signature of a startup
+# race rather than a broken config.
+Wants=wireplumber.service
+After=wireplumber.service pipewire.service
+
 # Give up after 5 restarts in 2 minutes. Without this a genuinely broken
 # binary would respawn forever instead of failing visibly.
 StartLimitIntervalSec=120
