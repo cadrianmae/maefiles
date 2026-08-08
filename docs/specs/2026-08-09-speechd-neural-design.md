@@ -285,6 +285,15 @@ appear in code or config defaults, the config file must be optional with working
 defaults, and the systemd units must be templated at install time rather than
 shipped with paths baked in.
 
+Release work is staged, and the first stage is deliberately thin. The repository
+is scaffolded up front so the code has a home and the release constraints above
+are respected from the first commit, but only the scaffold: a package layout, a
+test suite, a dev install path, and this design document. Everything else that
+release eventually demands, packaging metadata, an uninstaller, CI, published
+documentation and a licence decision, is deferred until the implementation
+actually works. The goal of the first stage is a daemon that speaks reliably,
+not a distributable artefact.
+
 ## Migration and rollback
 
 For an existing ad-hoc setup, the new stack installs alongside the old one
