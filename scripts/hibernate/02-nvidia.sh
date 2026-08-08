@@ -45,9 +45,28 @@ say "wait for the module to build"
 # kmod has been built. This can take up to 5 minutes on some systems."
 # Rebooting early boots to a black screen, because nouveau is blacklisted by
 # then and nvidia does not exist yet.
+# Check the kernel that will BOOT, not the one running. When the same dnf
+# transaction pulls in a newer kernel -- which it does, because akmod-nvidia
+# needs kernel-devel and that drags the matching kernel -- akmods builds only
+# for the new one. Only the new kernel has kernel-devel, so it CANNOT build for
+# the running one:
+#     Could not find files needed to compile modules for 7.1.6-201
+#     Checking kmods exist for 7.1.7-200 [  OK  ]
+# Checking `modinfo nvidia` (running kernel) therefore fails while everything is
+# actually correct, and aborts before the blacklist and dracut steps.
+TARGET_KERNEL=$(basename "$(grubby --default-kernel 2>/dev/null)" | sed 's/^vmlinuz-//')
+# grubby needs root and prints "/boot" when it cannot read grubenv, so validate
+# rather than trusting a non-empty string. Fall back to the newest kernel that
+# actually has a modules tree.
+if [[ ! -d /lib/modules/$TARGET_KERNEL ]]; then
+    TARGET_KERNEL=$(command ls -1 /lib/modules | sort -V | tail -1)
+fi
+[[ -d /lib/modules/$TARGET_KERNEL ]] || { echo "cannot determine target kernel" >&2; exit 1; }
+echo "kernel that will boot: $TARGET_KERNEL  (running: $(uname -r))"
+
 wait_for_module() {
     for i in $(seq 1 "$1"); do
-        modinfo nvidia &>/dev/null && return 0
+        modinfo -k "$TARGET_KERNEL" -F version nvidia &>/dev/null && return 0
         printf '\rwaiting for akmods... %ss ' "$((i * 5))"
         sleep 5
     done
@@ -59,19 +78,18 @@ wait_for_module() {
 # than starting a second one racing it.
 if ! wait_for_module 36; then
     echo "no module after 3 minutes -- forcing a build"
-    akmods --force 2>&1 | tail -20 || true
+    akmods --force --kernels "$TARGET_KERNEL" 2>&1 | tail -20 || true
     wait_for_module 36 || true
 fi
 
-if ! modinfo nvidia &>/dev/null; then
+if ! modinfo -k "$TARGET_KERNEL" -F version nvidia &>/dev/null; then
     echo
-    echo "ERROR: nvidia module still not built. DO NOT REBOOT." >&2
-    echo "Check: journalctl -u akmods -b  and  ls /var/cache/akmods/nvidia/" >&2
+    echo "ERROR: nvidia module not built for $TARGET_KERNEL. DO NOT REBOOT." >&2
+    echo "Check: ls /var/cache/akmods/nvidia/  and the .log there" >&2
     exit 1
 fi
-echo "nvidia module built: $(modinfo -F version nvidia)"
-# Must resolve under the RUNNING kernel, not some older one left in /lib/modules.
-modinfo -F filename nvidia
+echo "nvidia module built: $(modinfo -k "$TARGET_KERNEL" -F version nvidia)"
+modinfo -k "$TARGET_KERNEL" -F filename nvidia
 
 say "blacklist nouveau on the kernel command line"
 # RPM Fusion's packaging blacklists nouveau by itself, so this is belt and
