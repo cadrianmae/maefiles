@@ -1,4 +1,4 @@
-# speechd-tts: a pluggable local TTS backend for speech-dispatcher
+# speechd-neural: local neural TTS engines for speech-dispatcher
 
 Date: 2026-08-09
 Status: design approved, not yet implemented
@@ -13,8 +13,16 @@ several hundred megabytes of ONNX weights every time somebody speaks a sentence.
 The usual workaround is a persistent daemon holding the model in memory, with
 the `sd_generic` command acting as a thin client. That workaround is what this
 project generalises: a resident daemon, a pluggable engine layer so the
-synthesiser can be swapped (piper, espeak-ng, others), and predictable failure
-behaviour so a broken backend degrades audibly rather than going silent.
+synthesiser can be swapped, and predictable failure behaviour so a broken
+backend degrades audibly rather than going silent.
+
+The engines it exists to serve are neural (piper today, kokoro and others via
+the same interface). It nonetheless ships a formant synthesiser, espeak-ng, as
+a deliberate fallback: neural engines depend on model files, GPU runtimes and
+several hundred megabytes of wheels, all of which can break independently of
+each other, whereas espeak-ng is a small binary that essentially always works.
+An intelligible robotic voice beats silence, so the non-neural fallback is
+load-bearing rather than an afterthought.
 
 This is project A of two. Project B, notification TTS, is a separate spec built
 on top of this one.
@@ -140,7 +148,7 @@ rather than a second copy of the pipeline.
 Installed layout, XDG-conformant:
 
 ```
-$HOME/.local/libexec/speechd-tts/
+$HOME/.local/libexec/speechd-neural/
     run              front-end, sd_generic entry point
     daemon.py        core: socket, model cache, idle lifetime
     client.py        core: socket client
@@ -149,9 +157,9 @@ $HOME/.local/libexec/speechd-tts/
         base.py      Engine protocol
         piper.py     ONNX, CUDA -> CPU fallback
         espeak.py    subprocess
-$HOME/.config/speechd-tts/config.toml
-$HOME/.config/systemd/user/speechd-tts.{service,socket}
-$HOME/.local/bin/speechd-tts     CLI: warm | status | say | test | engines
+$HOME/.config/speechd-neural/config.toml
+$HOME/.config/systemd/user/speechd-neural.{service,socket}
+$HOME/.local/bin/speechd-neural     CLI: warm | status | say | test | engines
 ```
 
 `$HOME/.local/libexec/` holds the internal service helpers, which are not
@@ -201,7 +209,7 @@ base_volume = 40000
 `AddVoice` lines stay in the speech-dispatcher module config. That is speechd's
 own voice registry and is not duplicated here.
 
-The speech-dispatcher module is named `speechd-tts`.
+The speech-dispatcher module is named `speechd-neural`.
 
 ## Failure handling
 
@@ -225,7 +233,7 @@ The governing principle: **never fail silently, always degrade to some speech.**
 5. **`status` and `test` subcommands.** `status` reports engine, device, cached
    models, daemon uptime and last error. `test` runs every engine against every
    device and prints an OK/FAIL table.
-6. **Journal logging.** stderr to `journalctl --user -u speechd-tts`, replacing
+6. **Journal logging.** stderr to `journalctl --user -u speechd-neural`, replacing
    the `/tmp` log files.
 7. **Fail loud.** The front-end exits non-zero when nothing was spoken.
 8. **Synth watchdog.** If no PCM arrives within a timeout, the attempt is
@@ -283,12 +291,12 @@ For an existing ad-hoc setup, the new stack installs alongside the old one
 rather than replacing it in place, so the cutover is a single config line and
 the rollback is the same line reversed.
 
-1. Install `speechd-tts` while the existing module remains the default. Nothing
+1. Install `speechd-neural` while the existing module remains the default. Nothing
    changes for daily use.
-2. Add the `speechd-tts` module config and its systemd units. Verify with
-   `spd-say -o speechd-tts` and the `test` subcommand while the old module still
+2. Add the `speechd-neural` module config and its systemd units. Verify with
+   `spd-say -o speechd-neural` and the `test` subcommand while the old module still
    works.
-3. Cut over by pointing `DefaultModule` in `speechd.conf` at `speechd-tts`.
+3. Cut over by pointing `DefaultModule` in `speechd.conf` at `speechd-neural`.
 4. Soak. Rollback at any point is reverting `DefaultModule`, which is left
    untouched throughout.
 5. Only after the soak: remove the old scripts, units, module config and cache
