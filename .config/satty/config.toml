@@ -1,0 +1,45 @@
+# Satty — screenshot annotation, fed by grim + slurp.
+#
+# Chosen after Flameshot and ksnip both failed on niri, for the same underlying
+# reason: they capture through the XDG screenshot portal, and
+# xdg-desktop-portal-gnome cannot service it here —
+#   Failed to get screenshot: GDBus.Error...: internal error
+# Flameshot then timed out; ksnip did not recognise `niri`, fell back to a
+# generic grabber and segfaulted. Satty avoids all of that by never capturing:
+# grim hands it an image on stdin.
+#
+# Keys are bound in niri's binds.kdl; everything here is the default behaviour
+# so those binds stay short.
+
+[general]
+fullscreen = false
+
+# Float rather than tile. Without this niri gives the annotation window a
+# column in the layout, which is not what you want over a screenshot.
+floating-hack = true
+
+# Close after copying or saving — this is a capture tool, not an editor to
+# dismiss by hand.
+early-exit = ["all"]
+
+# wl-clipboard is installed; this is what puts the result on the clipboard.
+copy-command = "wl-copy"
+
+# Arrow first: the most common annotation is pointing at something.
+initial-tool = "arrow"
+
+# Annotations are sized for a 1080p 17" panel; the default is thin here.
+annotation-size-factor = 2
+
+corner-roundness = 12
+
+# Saved copies land beside niri's own screenshots so there is one place to look.
+# strftime, and ~ is expanded since 0.20.0.
+output-filename = "~/Pictures/Screenshots/satty-%Y-%m-%d_%H-%M-%S.png"
+
+# Copy puts it on the clipboard AND writes the file, matching what niri's
+# built-in Print used to do.
+save-after-copy = true
+
+default-hide-toolbars = false
+default-fill-shapes = false

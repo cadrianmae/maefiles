@@ -269,9 +269,24 @@ binds {
     // Mod+Space       { switch-layout "next"; }
     // Mod+Shift+Space { switch-layout "prev"; }
 
-    Print { screenshot; }
-    Ctrl+Print { screenshot-screen; }
-    Alt+Print { screenshot-window; }
+    // Screen capture. grim/slurp/wf-recorder all talk to the compositor through
+    // wlr-screencopy; nothing here touches the XDG portal, which is broken under
+    // niri -- xdg-desktop-portal-gnome answers "internal error", which is why
+    // flameshot timed out and ksnip segfaulted.
+    //
+    //   Print            focused monitor -> clipboard, no UI at all
+    //   Ctrl+Print       freeze screen   -> crop a region, then annotate
+    //   Alt+Print        toggle a screen recording
+    //   Ctrl+Alt+Print   pick a window   (niri's own; grim cannot do this)
+
+    // -o the focused output, or a second monitor gets captured instead.
+    Print { spawn-sh "grim -o \"$(niri msg --json focused-output | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"name\"])')\" - | wl-copy"; }
+
+    Ctrl+Print { spawn-sh "grim -o \"$(niri msg --json focused-output | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"name\"])')\" - | satty -f - --fullscreen --initial-tool crop"; }
+
+    Alt+Print { spawn "screenrec"; }
+
+    Ctrl+Alt+Print { screenshot-window; }
 
     // Applications such as remote-desktop clients and software KVM switches may
     // request that niri stops processing the keyboard shortcuts defined here

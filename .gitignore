@@ -36,3 +36,7 @@ bin/wokwi-cli
 # Compiled ptt-daemon binary; source is tracked, build output is not
 # (mirrors ~/.local/libexec/, which is untracked by the same logic).
 scripts/ptt/ptt-daemon
+
+# Restore kits hold wifi PSKs, SSH host private keys and the LUKS header.
+# maefiles pushes to GitHub -- nothing under here may ever be tracked.
+reinstall-kit/

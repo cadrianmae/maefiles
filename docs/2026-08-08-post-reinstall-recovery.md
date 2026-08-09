@@ -221,6 +221,28 @@ restore-repos.sh, collect-root.sh, kwallet-to-keyring.sh — all byte-verified.
 - grub Lumae theme — parked, needs artwork rather than config
 - WH-1000XM6 maps to the `Default` EasyEffects preset, not a tuned one
 - `qt6ct` fonts unset (stored as base64 QVariant; set them in the GUI)
+- **EasyEffects is not in the audio path.** `process-all-outputs` is unset, the
+  default sink is the hardware sink, and `easyeffects_sink` has zero clients —
+  so the loaded `Nitro 5 AN517 Speakers` preset is applied to nothing. Enable
+  "Process All Output Streams" in EE Preferences. Until then `screenrec`'s
+  pre-effects capture records silence and falls back is not triggered, because
+  the monitor source exists but carries no audio.
+- Intel iGPU not visible in `mae/sysmon` — only the NVIDIA card is reported
+
+### Trap: removing flameshot/ksnip silently takes `grim`
+
+`sudo dnf remove flameshot ksnip` removed **7** packages, not 2. `grim` had been
+pulled in as a dependency, so dnf counted it as an orphan and took it — along
+with `kimageannotator`, `kcolorpicker` and the Qt variants. Every Print bind
+broke at once with `grim: command not found`, which reads as a niri or bind
+problem rather than a package one.
+
+Reinstalled explicitly, so `grim`, `slurp` and `wf-recorder` are now
+user-installed and safe from the next autoremove. Check with:
+
+```bash
+dnf repoquery --userinstalled | grep -E '^(grim|slurp|wf-recorder)'
+```
 
 ---
 

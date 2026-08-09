@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# Toggle a screen recording of the focused output.
+#
+# Bound to Alt+Print. First press starts, second press stops and finalises the
+# file — a recorder needs a toggle, not a launch, or you end up with an
+# orphaned process writing to disk with no obvious way to stop it.
+#
+# wf-recorder talks to the compositor through wlr-screencopy, the same path grim
+# uses. That matters here: the XDG screenshot/screencast portal is broken under
+# niri (xdg-desktop-portal-gnome returns "internal error"), so anything
+# portal-based is not an option on this machine.
+#
+# Records SYSTEM AUDIO by default, PRE EasyEffects.
+#
+# The chain is:  apps -> easyeffects_sink -> processing -> hardware sink
+#
+#   easyeffects_sink.monitor    what the apps sent      <- recorded by default
+#   <hardware sink>.monitor     what you actually hear  (EQ, compression, etc)
+#
+# Pre-effects is the right default for a recording: the EQ here is fitted to
+# these laptop speakers and to whichever headphones are connected, so baking it
+# into a file makes the file sound wrong everywhere else.
+#
+# Falls back to the default sink's monitor when EasyEffects is not running,
+# which is the same audio unprocessed anyway.
+#
+#   screenrec              video + system audio, pre-effects  (default)
+#   screenrec --post       video + system audio, post-effects (what you hear)
+#   screenrec --mic        video + microphone
+#   screenrec --no-audio   video only
+
+set -uo pipefail
+
+AUDIO=system
+case "${1:-}" in
+    --post)     AUDIO=post ;;
+    --mic)      AUDIO=mic ;;
+    --no-audio) AUDIO=none ;;
+    "")         ;;
+    *) echo "usage: screenrec [--post|--mic|--no-audio]" >&2; exit 1 ;;
+esac
+
+DEST="$HOME/Videos/Recordings"
+STATE="${XDG_RUNTIME_DIR:-/tmp}/screenrec.pid"
+
+notify() { command -v notify-send >/dev/null && notify-send -a screenrec "$1" "${2:-}"; }
+
+# --- stop, if one is already running -----------------------------------------
+if [[ -f $STATE ]] && kill -0 "$(cat "$STATE")" 2>/dev/null; then
+    pid=$(cat "$STATE")
+    # SIGINT, not SIGKILL: wf-recorder needs to write the moov atom or the mp4
+    # is unplayable. SIGKILL leaves a corrupt file.
+    kill -INT "$pid" 2>/dev/null
+    for _ in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+    rm -f "$STATE"
+    last=$(find "$DEST" -maxdepth 1 -name '*.mp4' -printf '%T@ %p\n' 2>/dev/null | sort -rn | head -1 | cut -d' ' -f2-)
+    if [[ -n ${last:-} && -s ${last:-} ]]; then
+        notify "Recording saved" "$(basename "$last")  ($(du -h "$last" | cut -f1))"
+        echo "saved: $last"
+    else
+        notify "Recording stopped" "but no file was written"
+    fi
+    exit 0
+fi
+
+# --- otherwise start ----------------------------------------------------------
+command -v wf-recorder >/dev/null || {
+    notify "screenrec" "wf-recorder is not installed"
+    echo "install it: sudo dnf install wf-recorder" >&2; exit 1
+}
+
+mkdir -p "$DEST"
+out="$DEST/$(date +%Y-%m-%d_%H-%M-%S).mp4"
+
+# Record the focused monitor rather than guessing. Falls back to whatever
+# wf-recorder picks if niri cannot say.
+output=$(niri msg --json focused-output 2>/dev/null |
+         python3 -c 'import json,sys; print(json.load(sys.stdin).get("name",""))' 2>/dev/null)
+
+args=(-f "$out")
+[[ -n $output ]] && args+=(-o "$output")
+
+# Audio. The monitor source of a sink is what "system audio" means on PipeWire
+# -- recording the sink itself is not possible, you record what it plays.
+have_source() { pactl list sources short 2>/dev/null | awk '{print $2}' | grep -qxF "$1"; }
+default_sink_monitor() {
+    local sink
+    sink=$(wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null |
+           awk -F'"' '/node\.name/{print $2; exit}')
+    [[ -n ${sink:-} ]] && printf '%s.monitor' "$sink"
+}
+
+case $AUDIO in
+  system)
+    # Pre-effects: what apps sent, before EasyEffects touches it.
+    if have_source easyeffects_sink.monitor; then
+        args+=(--audio=easyeffects_sink.monitor)
+        audio_desc="system audio (pre-effects)"
+    else
+        mon=$(default_sink_monitor)
+        if [[ -n ${mon:-} ]] && have_source "$mon"; then
+            args+=(--audio="$mon")
+            audio_desc="system audio (EasyEffects not running)"
+        else
+            audio_desc="NO AUDIO (no monitor source found)"
+        fi
+    fi
+    ;;
+  post)
+    mon=$(default_sink_monitor)
+    if [[ -n ${mon:-} ]] && have_source "$mon"; then
+        args+=(--audio="$mon")
+        audio_desc="system audio (post-effects)"
+    else
+        audio_desc="NO AUDIO (no monitor source for the default sink)"
+    fi
+    ;;
+  mic)
+    src=$(wpctl inspect @DEFAULT_AUDIO_SOURCE@ 2>/dev/null |
+          awk -F'"' '/node\.name/{print $2; exit}')
+    [[ -n ${src:-} ]] && { args+=(--audio="$src"); audio_desc="microphone"; } \
+                      || audio_desc="NO AUDIO (no default source)"
+    ;;
+  none) audio_desc="no audio" ;;
+esac
+
+# Hardware encode on the Intel iGPU. This is a 4-core i5 and software x264 at
+# 1080p60 competes with whatever you are recording; VAAPI does not. Falls back
+# to software if the render node is missing.
+if [[ -e /dev/dri/renderD128 ]]; then
+    args+=(-c h264_vaapi -d /dev/dri/renderD128)
+fi
+
+setsid wf-recorder "${args[@]}" >/dev/null 2>&1 &
+pid=$!
+echo "$pid" > "$STATE"
+
+# Confirm it actually survived startup -- a bad codec or busy output makes
+# wf-recorder exit immediately, and a silent no-op is worse than an error.
+sleep 1
+if kill -0 "$pid" 2>/dev/null; then
+    notify "Recording started" "${output:-all outputs} · ${audio_desc} -> $(basename "$out")"
+    echo "recording: $out"
+else
+    rm -f "$STATE"
+    notify "Recording failed to start" "try: wf-recorder -f /tmp/test.mp4"
+    echo "wf-recorder exited immediately" >&2; exit 1
+fi
