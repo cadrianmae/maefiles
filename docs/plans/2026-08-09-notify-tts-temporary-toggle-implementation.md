@@ -733,14 +733,16 @@ def _cmd_status(args, cfg) -> int:
     if remaining is not None:
         word = f"{word} (temporary, {format_remaining(remaining)} remaining)"
 
-    _status_line("toggle", word)
+    # NOTE: _status_line RETURNS the formatted line; it does not print.
+    # Keep the existing print(_status_line(...)) shape.
+    print(_status_line("toggle", word))
     if state.until is not None:
-        _status_line("until", time.strftime("%H:%M on %d %b", time.localtime(state.until)))
-    _status_line("daemon", _daemon_status())
-    _status_line("state", str(state_path()))
-    _status_line("priority", cfg.speech.priority)
-    _status_line("max_chars", str(cfg.speech.max_chars))
-    _status_line("denylist", ", ".join(cfg.filter.denylist) or "(empty)")
+        print(_status_line("until", time.strftime("%H:%M on %d %b", time.localtime(state.until))))
+    print(_status_line("daemon", _daemon_status()))
+    print(_status_line("state", str(state_path())))
+    print(_status_line("priority", cfg.speech.priority))
+    print(_status_line("max_chars", str(cfg.speech.max_chars)))
+    print(_status_line("denylist", ", ".join(cfg.filter.denylist) or "(empty)"))
     return 0
 ```
 
