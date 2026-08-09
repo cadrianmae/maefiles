@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Stream every GPU's stats as one line per tick, for the sysmon widget.
+
+    AVAIL|intel,nvidia          once, at startup
+    INTEL|30
+    NVIDIA|43|9|18              temp C | util % | VRAM used %
+
+Two jobs. First, nvtop's machine-readable output is a multi-line JSON array
+and the widget's runStream is line-based, so this reframes one array per tick
+into one line per GPU. Second, it makes nvtop the single source for BOTH
+cards, which lets the widget drop a whole duplicated stream: one ownership,
+respawn and staleness path instead of two.
+
+The AVAIL line replaces the widget's old commandExists/fileExists probe.
+nvtop enumerating the devices is better evidence of what exists than guessing
+from which binaries are installed.
+
+Why nvtop rather than the obvious alternatives:
+
+  nvidia-smi dmon            vendor-authoritative and what this widget used
+                             for the discrete card. Still fine -- it is
+                             dropped only to avoid running two streams, not
+                             because anything was wrong with it. Note dmon's
+                             `mem` is memory BANDWIDTH utilisation, whereas
+                             nvtop's mem_util is VRAM OCCUPANCY. Different
+                             number, same row.
+  ksystemstats_intel_helper  what the widget used for the iGPU. Ships with
+                             KDE's ksystemstats, which pulls KIO,
+                             NetworkManagerQt, Solid and libksysguard -- the
+                             Plasma stack this machine was reinstalled to shed.
+  intel_gpu_top              reads the i915 PMU, which needs CAP_PERFMON.
+                             perf_event_paranoid is 2 here, so it would need
+                             root or a system-wide sysctl change.
+  nvtop                      already installed, reads DRM fdinfo unprivileged,
+                             covers both cards, and has emitted JSON under
+                             -s/-l since 3.x.
+
+The integrated GPU is identified by elimination rather than by looking for
+"Intel": this machine's iGPU reports as "CoffeeLake-H GT2 (UHD Graphics 630)",
+with no vendor string in it at all.
+"""
+
+import json
+import re
+import subprocess
+import sys
+
+DISCRETE = re.compile(r"nvidia|geforce|quadro|tesla|radeon|\bamd\b", re.I)
+
+# -d is in tenths of a second. 20 = 2s, matching the widget's own tick -- a
+# faster stream would just be samples the widget throws away.
+NVTOP = ["nvtop", "-l", "-d", "20"]
+
+
+def pct(value):
+    """Leading integer of nvtop's "43C" / "9%" strings, or None."""
+    if not value:
+        return None
+    m = re.match(r"(\d+)", str(value))
+    return m.group(1) if m else None
+
+
+def emit(devices, announced):
+    discrete = [d for d in devices if DISCRETE.search(d.get("device_name") or "")]
+    integrated = [d for d in devices if d not in discrete]
+
+    if not announced:
+        names = []
+        if integrated:
+            names.append("intel")
+        if discrete:
+            names.append("nvidia")
+        print("AVAIL|" + ",".join(names), flush=True)
+
+    # gpu_util is null until nvtop has two samples to diff, so a missing
+    # value is skipped rather than published as a bogus 0.
+    for dev in integrated[:1]:
+        util = pct(dev.get("gpu_util"))
+        if util is not None:
+            print(f"INTEL|{util}", flush=True)
+
+    for dev in discrete[:1]:
+        temp = pct(dev.get("temp"))
+        util = pct(dev.get("gpu_util"))
+        mem = pct(dev.get("mem_util"))
+        if None not in (temp, util, mem):
+            print(f"NVIDIA|{temp}|{util}|{mem}", flush=True)
+
+
+def main():
+    try:
+        proc = subprocess.Popen(
+            NVTOP, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True
+        )
+    except FileNotFoundError:
+        print("nvtop not installed", file=sys.stderr)
+        return 1
+
+    # nvtop prints a complete array per tick, so accumulate until the brackets
+    # balance rather than assuming a line count -- the embedded process list
+    # grows and shrinks with whatever is on the GPU.
+    buf, depth, announced = [], 0, False
+
+    for line in proc.stdout:
+        buf.append(line)
+        depth += line.count("[") - line.count("]")
+        if depth > 0:
+            continue
+
+        chunk, buf = "".join(buf), []
+        try:
+            devices = json.loads(chunk)
+        except json.JSONDecodeError:
+            continue  # a torn tick is not worth killing the stream over
+
+        emit(devices, announced)
+        announced = True
+
+    return proc.wait()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

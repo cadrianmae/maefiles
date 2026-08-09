@@ -227,7 +227,41 @@ restore-repos.sh, collect-root.sh, kwallet-to-keyring.sh — all byte-verified.
   "Process All Output Streams" in EE Preferences. Until then `screenrec`'s
   pre-effects capture records silence and falls back is not triggered, because
   the monitor source exists but carries no audio.
-- Intel iGPU not visible in `mae/sysmon` — only the NVIDIA card is reported
+
+### Resolved: Intel iGPU missing from `mae/sysmon`
+
+The widget read the iGPU through `/usr/libexec/ksystemstats_intel_helper`,
+which ships with KDE's `ksystemstats` — dropped with the rest of Plasma. The
+probe was `fileExists(HELPER)`, so the row was correctly omitted rather than
+broken; nothing looked wrong, the iGPU simply was not there.
+
+Reinstalling `ksystemstats` would drag KIO, NetworkManagerQt, Solid and
+libksysguard back in. `intel_gpu_top` reads the i915 PMU and needs
+`CAP_PERFMON` (`perf_event_paranoid` is 2 here). `nvtop` was already
+installed, reads DRM fdinfo unprivileged, covers both cards, and has emitted
+JSON under `-s`/`-l` since 3.x.
+
+So both GPUs now come from one stream, `~/bin/sysmon-gpu`, which reframes
+nvtop's multi-line JSON into one line per GPU per tick. That also let the
+widget drop a duplicated stream: one ownership, respawn and staleness path
+instead of two, and availability discovered from nvtop's device list rather
+than guessed from which binaries exist.
+
+Two things to know:
+
+- `nvidia-smi dmon`'s `mem` column was memory *bandwidth*; nvtop's `mem_util`
+  is VRAM *occupancy*. The panel renders only usage and temp, so nothing
+  visible changed.
+- **noctalia's Luau sandbox has no `os` library.** `os.getenv("HOME")` fails
+  the entire chunk at load with `attempt to call a nil value`, same class as
+  the absent `require`/`load`. Paths must be absolute.
+
+Reload without restarting the service — a restart kills noctalia's cgroup and
+takes launcher-spawned apps with it:
+
+```bash
+noctalia msg plugins disable mae/sysmon && noctalia msg plugins enable mae/sysmon
+```
 
 ### Trap: removing flameshot/ksnip silently takes `grim`
 

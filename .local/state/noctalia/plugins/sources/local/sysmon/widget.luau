@@ -71,54 +71,55 @@ function parse.pressure(text)
   return out
 end
 
--- nvidia-smi dmon emits two header lines starting with '#', then data lines
--- of whitespace-separated numbers. Real column order, captured on this
--- machine into ~/scripts/noctalia-sysmon/fixtures/nvidia_dmon.txt via
--- `nvidia-smi dmon -d 2 -s pucm`: gpu pwr gtemp mtemp sm mem enc dec jpg ofa
--- mclk pclk fb bar1 ccpm.
+-- One line per GPU per tick from ~/bin/sysmon-gpu, which reframes nvtop's
+-- multi-line JSON into something a line-based runStream can consume:
 --
--- mtemp is "-" on this machine (no dedicated memory-temp sensor), so
--- tonumber("-") is nil for that column. table.insert(fields, tonumber(tok))
--- would silently skip that nil and shift every later column left by one --
--- sm (usage) would be read from mem's slot instead. Assign by explicit
--- position (fields[count] = ...) so a hole stays a hole and later columns
--- keep their real index.
-function parse.nvidia_dmon(line)
-  if not line or string.match(line, "^%s*#") then return nil end
-  local fields = {}
-  local count = 0
-  for tok in string.gmatch(line, "%S+") do
-    count = count + 1
-    fields[count] = tonumber(tok)
-  end
-  if count < 6 or not fields[3] or not fields[5] or not fields[6] then return nil end
-  return { temp = fields[3], usage = fields[5], mem_usage = fields[6] }
-end
-
--- Pipe-delimited key/value pairs after a leading nanosecond timestamp, as
--- emitted by /usr/libexec/ksystemstats_intel_helper (ships with ksystemstats,
--- already carries cap_perfmon, needs no perf_event_paranoid change).
-function parse.intel_helper(line)
+--   AVAIL|intel,nvidia     once, at stream start
+--   INTEL|30               utilisation percent
+--   NVIDIA|43|9|18         temp C | utilisation % | VRAM used %
+--
+-- Replaces the two previous sources, parse.nvidia_dmon (nvidia-smi dmon) and
+-- parse.intel_helper (KDE's ksystemstats_intel_helper), with one. The Intel
+-- helper had to go -- ksystemstats pulls the Plasma stack this machine was
+-- reinstalled to shed -- and once nvtop was the Intel source, running
+-- nvidia-smi alongside it meant two streams for data one process already had.
+--
+-- AVAIL is what the widget's availability probe used to derive from
+-- commandExists/fileExists. nvtop enumerating the devices is better evidence
+-- of what exists than which binaries happen to be installed.
+--
+-- No percent arithmetic here anymore: nvtop reports utilisation directly, so
+-- the old intel_percent() busy-nanoseconds-over-elapsed-nanoseconds delta
+-- (and the prior-sample baseline it needed) is gone with it.
+function parse.gpu_line(line)
   if not line then return nil end
-  local ts = string.match(line, "^(%d+)|")
-  if not ts then return nil end
-  local out = { timestamp = tonumber(ts) }
-  for key, value in string.gmatch(line, "|(%a+)|(%d+)") do
-    out[string.lower(key)] = tonumber(value)
-  end
-  if out.render == nil then return nil end
-  return out
-end
 
--- Busy-nanoseconds delta over elapsed-nanoseconds delta, matching upstream
--- LinuxIntelGpu: (value - lastUsage) * 100.0 / timediff.
-function parse.intel_percent(prev_render, prev_ts, render, ts)
-  local dt = ts - prev_ts
-  if dt <= 0 then return 0 end
-  local pct = math.floor(((render - prev_render) * 100) / dt + 0.5)
-  if pct < 0 then return 0 end
-  if pct > 100 then return 100 end
-  return pct
+  local avail = string.match(line, "^AVAIL|(.*)$")
+  if avail then
+    local out = { kind = "avail", intel = false, nvidia = false }
+    for name in string.gmatch(avail, "[^,]+") do
+      if name == "intel" then out.intel = true end
+      if name == "nvidia" then out.nvidia = true end
+    end
+    return out
+  end
+
+  local intel = string.match(line, "^INTEL|(%d+)$")
+  if intel then
+    return { kind = "intel", pct = tonumber(intel) }
+  end
+
+  local temp, usage, mem = string.match(line, "^NVIDIA|(%d+)|(%d+)|(%d+)$")
+  if temp then
+    return {
+      kind = "nvidia",
+      temp = tonumber(temp),
+      usage = tonumber(usage),
+      mem_usage = tonumber(mem),
+    }
+  end
+
+  return nil
 end
 
 -- df --output=avail,size -B1 prints a header then one data line of bytes.
@@ -349,6 +350,13 @@ local gpu_stale = { nvidia = false, intel = false }
 -- needing its own continuously-running clock.
 local nvidia_stale_ticks = 0
 local intel_stale_ticks = 0
+-- Ticks since ANY line was parsed from the shared helper. Distinct from the
+-- two per-GPU counters above: those answer "is this card's reading current",
+-- this answers "is the process still producing anything at all", which is the
+-- only question the respawn schedule should act on. Using a per-GPU counter
+-- for that would make a single-GPU machine -- where the absent card's counter
+-- climbs forever -- look like a permanently dead stream.
+local stream_stale_ticks = 0
 -- Same cadence reasoning as HISTORY_LEN/graph_history.flatten below: both
 -- streams' own polling interval and the widget's tick are ~2s, so 3
 -- consecutive misses (~6s) is already 3x the expected inter-arrival gap --
@@ -360,17 +368,35 @@ local intel_stale_ticks = 0
 -- disagree.
 local STALE_TICKS = 3
 
-local intel_prev = { render = nil, ts = nil }
-local streams = { nvidia = nil, intel = nil }
-local stream_pids = { nvidia = nil, intel = nil }
+local streams = { gpu = nil }
+local stream_pids = { gpu = nil }
 
-local HELPER = "/usr/libexec/ksystemstats_intel_helper"
+-- One helper for BOTH cards. ~/bin/sysmon-gpu wraps nvtop, which reads DRM
+-- fdinfo unprivileged and reports every GPU, and reframes its multi-line JSON
+-- into one line per GPU per tick (see parse.gpu_line above).
+--
+-- This replaced two streams. The Intel one had to change regardless: it ran
+-- KDE's /usr/libexec/ksystemstats_intel_helper, and ksystemstats pulls KIO,
+-- NetworkManagerQt, Solid and libksysguard -- the Plasma stack this machine
+-- was reinstalled to shed. Once nvtop was the Intel source it already had the
+-- NVIDIA figures too, so keeping `nvidia-smi dmon` alongside it meant running
+-- a second process for data the first one had already parsed.
+--
+-- Consequence worth knowing: dmon's `mem` column was memory BANDWIDTH
+-- utilisation; nvtop's mem_util is VRAM OCCUPANCY. The NVIDIA row's memory
+-- figure therefore means something different than it did before.
+-- Absolute, not os.getenv("HOME") .. "/bin/...": noctalia's Luau sandbox has
+-- no `os` library at all, and referencing it fails the whole chunk at load
+-- time with "attempt to call a nil value" -- the same class of missing-stdlib
+-- limitation as the absent `require`/`load` documented in parse.luau's header.
+-- Not PATH-relative either: this runs under noctalia.service, whose PATH is
+-- not the login shell's and need not contain ~/bin.
+local HELPER = "/home/cadrianmae/bin/sysmon-gpu"
 -- Wrapped in `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'` so stop_streams can
 -- recover an exact, killable PID with no pattern matching -- see the long
 -- comment this carries over from panel.luau's original start_streams/
 -- stop_streams, reproduced in full below on stop_streams.
-local NVIDIA_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec nvidia-smi dmon -d 2 -s pucm'"
-local HELPER_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
+local GPU_CMD = "sh -c 'echo NOCTALIA_PID:$$; exec " .. HELPER .. "'"
 
 -- Rolling history for the bar graphs. Sized to each graph's own pixel width
 -- (40) so each history slot is roughly one pixel column -- more samples than
@@ -477,8 +503,8 @@ end
 -- the panel, which used to start/stop them on open/close -- the bar needs
 -- GPU data continuously, not just while a panel happens to be open). But the
 -- plugin loads once per monitor (see my_output above), so a naive "just
--- start streams on load" would spawn two nvidia-smi dmon and two
--- ksystemstats_intel_helper processes on this two-monitor machine.
+-- start streams on load" would spawn two copies of the GPU helper on this
+-- two-monitor machine.
 --
 -- noctalia.state has no compare-and-swap -- get() and set() are each
 -- individually atomic (mutex-protected in the host's PluginStateStore), but
@@ -519,8 +545,8 @@ end
 -- obvious candidates), OWNER_KEY stays pointing at a dead output forever,
 -- and no instance could ever claim it again without the heartbeat check
 -- below.
-local start_streams, stop_streams, probe_gpu_availability
-local start_nvidia_stream, start_intel_stream
+local start_streams, stop_streams
+local start_gpu_stream
 local kill_stream_pid
 
 local function update_ownership()
@@ -595,77 +621,53 @@ local function update_ownership()
   end
 end
 
-probe_gpu_availability = function()
-  gpu_available = {
-    nvidia = noctalia.commandExists("nvidia-smi"),
-    intel = noctalia.fileExists(HELPER),
-  }
-  noctalia.state.set(AVAILABLE_KEY, gpu_available)
-end
+-- Availability is no longer probed by asking whether binaries exist
+-- (commandExists("nvidia-smi") / fileExists(the KDE helper)). The helper's
+-- first line is an AVAIL list of the GPUs nvtop actually enumerated, which is
+-- better evidence of what this machine has than which packages are installed.
+--
+-- gpu_available therefore stays nil until that line arrives, which is exactly
+-- the "not yet known" state the panel renders as dimmed placeholder rows --
+-- see the long comment on the `local gpu_available` declaration above for the
+-- three states this distinguishes.
+start_gpu_stream = function()
+  -- Unlike the old per-GPU starts there is no `gpu_available.X` guard here:
+  -- this stream is what DISCOVERS availability, so gating it on availability
+  -- would mean it could never start. The guard that remains is the one that
+  -- matters -- never run two copies of it.
+  if streams.gpu then return end
 
--- Neither GPU exposes utilisation in sysfs; this copies KDE's approach
--- exactly (NvidiaSmiProcess.cpp and the ksystemstats Intel helper upstream)
--- rather than polling anything ourselves -- same approach panel.luau used to
--- take when it owned these streams. Every line is published to
--- noctalia.state rather than kept as widget-local state, so the panel (and
--- any other monitor's non-owner widget) can read it.
--- Split out of start_streams so a single-stream respawn (see maybe_respawn
--- below) can (re)start just the one dead stream without re-running
--- probe_gpu_availability -- that call spawns two more subprocesses
--- (commandExists/fileExists) and, more importantly, availability is a
--- settled fact for the session once first probed (see the long comment on
--- maybe_respawn's known_available gate): re-probing on every respawn would
--- blur "never available" and "available but its stream died" back
--- together, which is exactly the distinction requirement 5 exists to keep.
--- Each function keeps the same `gpu_available.X and not streams.X` guard
--- start_streams always had, so calling either one when the stream is
--- already running, or when that GPU was never available, is a no-op.
-start_nvidia_stream = function()
-  -- nvidia_stale_ticks resets to 0 right where the stream actually
-  -- publishes a fresh value -- update() below increments it every owner
-  -- tick and publishes the derived STALE_KEY, so a reset here is what
-  -- keeps a live stream from ever being reported stale.
-  if gpu_available.nvidia and not streams.nvidia then
-    streams.nvidia = noctalia.runStream(NVIDIA_CMD, function(line)
-      local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
-      if pid then stream_pids.nvidia = pid; return end
-      local n = parse.nvidia_dmon(line)
-      if n then
-        nvidia_stale_ticks = 0
-        noctalia.state.set(NVIDIA_KEY, n)
-      end
-    end)
-  end
-end
+  -- nvidia_stale_ticks/intel_stale_ticks reset where their own line is
+  -- published, not on any line, so one card going quiet while the other keeps
+  -- reporting still blanks only the quiet one -- the same per-GPU staleness
+  -- the two-stream version gave, preserved now that both share a process.
+  streams.gpu = noctalia.runStream(GPU_CMD, function(line)
+    local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
+    if pid then stream_pids.gpu = pid; return end
 
-start_intel_stream = function()
-  -- Ships with ksystemstats and already carries cap_perfmon, so no
-  -- system-wide perf_event_paranoid change is needed. Absent if KDE's
-  -- ksystemstats package is uninstalled, in which case gpu_available.intel
-  -- stays false and the panel's INTEL row (sourced from AVAILABLE_KEY) is
-  -- omitted entirely, same as before this task.
-  if gpu_available.intel and not streams.intel then
-    streams.intel = noctalia.runStream(HELPER_CMD, function(line)
-      local pid = string.match(line, "^NOCTALIA_PID:(%d+)$")
-      if pid then stream_pids.intel = pid; return end
-      local i = parse.intel_helper(line)
-      if not i then return end
-      -- First line has no prior sample to diff against -- seed the
-      -- baseline and skip publishing rather than a bogus 0%.
-      if intel_prev.ts then
-        local pct = parse.intel_percent(intel_prev.render, intel_prev.ts, i.render, i.timestamp)
-        intel_stale_ticks = 0
-        noctalia.state.set(INTEL_KEY, pct)
-      end
-      intel_prev.render, intel_prev.ts = i.render, i.timestamp
-    end)
-  end
+    local g = parse.gpu_line(line)
+    if not g then return end
+
+    -- Any parsed line proves the stream itself is alive, which is what the
+    -- respawn schedule below watches -- kept separate from the two per-GPU
+    -- counters so a machine with only one GPU never looks like a dead stream.
+    stream_stale_ticks = 0
+
+    if g.kind == "avail" then
+      gpu_available = { nvidia = g.nvidia, intel = g.intel }
+      noctalia.state.set(AVAILABLE_KEY, gpu_available)
+    elseif g.kind == "nvidia" then
+      nvidia_stale_ticks = 0
+      noctalia.state.set(NVIDIA_KEY, { temp = g.temp, usage = g.usage, mem_usage = g.mem_usage })
+    elseif g.kind == "intel" then
+      intel_stale_ticks = 0
+      noctalia.state.set(INTEL_KEY, g.pct)
+    end
+  end)
 end
 
 start_streams = function()
-  probe_gpu_availability()
-  start_nvidia_stream()
-  start_intel_stream()
+  start_gpu_stream()
 end
 
 -- The SIGTERM-then-SIGKILL escalation (with the pkill -x -f fallback for a
@@ -695,11 +697,9 @@ end
 -- keeps the simpler behaviour (do nothing) rather than adding code to chase
 -- a marginal improvement.
 stop_streams = function()
-  kill_stream_pid("nvidia", "nvidia-smi dmon -d 2 -s pucm")
-  kill_stream_pid("intel", HELPER)
+  kill_stream_pid("gpu", HELPER)
 
-  streams.nvidia, streams.intel = nil, nil
-  intel_prev.render, intel_prev.ts = nil, nil
+  streams.gpu = nil
 end
 
 -- Per-stream state for the owner-only single-stream respawn below. Kept
@@ -716,9 +716,13 @@ end
 -- is only used to decide whether a recovery is worth the one log line
 -- requirement 6 allows -- a stream that has never needed a respawn has
 -- nothing to "recover" from.
+-- One entry now, because there is one stream. The two-stream version needed
+-- independent schedules so a broken NVIDIA helper could not disturb Intel's
+-- backoff; with both cards behind one process that isolation is neither
+-- possible nor meaningful -- if the process dies, both readings stop, and one
+-- respawn restores both.
 local respawn = {
-  nvidia = { gap = respawn_backoff.INITIAL, attempt_at = respawn_backoff.INITIAL, awaiting_recovery = false },
-  intel = { gap = respawn_backoff.INITIAL, attempt_at = respawn_backoff.INITIAL, awaiting_recovery = false },
+  gpu = { gap = respawn_backoff.INITIAL, attempt_at = respawn_backoff.INITIAL, awaiting_recovery = false },
 }
 
 -- Owner-only: kill-then-respawn exactly one GPU helper stream, independent
@@ -728,22 +732,18 @@ local respawn = {
 -- stream under a healthy owner was flagged as a known follow-up in the
 -- task-11 report, and closing it is this function's whole job).
 --
--- `known_available` gates this on the SAME `gpu_available.X == true` fact
--- update() already computes for STALE_KEY -- set once, at owner election,
--- by probe_gpu_availability(), and never re-probed by this function. A
--- helper the startup probe found absent (no nvidia-smi on this machine, no
--- ksystemstats_intel_helper installed) stays absent for the rest of the
--- session; `is_stale` can never legitimately mean "worth respawning" for a
--- stream that was never running in the first place, so a false
--- `known_available` short-circuits everything below before any kill/start
--- is even considered.
+-- The old `known_available` gate is gone with the two-stream design. It
+-- existed so a helper the startup probe never found (no nvidia-smi, no
+-- ksystemstats_intel_helper) could not be "respawned" forever, since a stream
+-- that never ran cannot legitimately be stale. Availability is now discovered
+-- BY this stream rather than probed before it, so that gate would be
+-- circular: refusing to start until availability is known, when starting is
+-- what establishes it.
 --
--- `is_stale` is the SAME boolean update() just derived for STALE_KEY
--- (nvidia_known_available/intel_known_available and
--- nvidia_stale_ticks/intel_stale_ticks >= STALE_TICKS) -- passed in rather
--- than recomputed, so the graph-blanking decision and the respawn decision
--- can never silently disagree about whether a stream currently counts as
--- stale.
+-- What replaces it is the caller's choice of counter. update() passes
+-- stream_stale_ticks -- "has the process produced any line at all" -- not
+-- either per-GPU counter, so an absent second card can never present as a
+-- broken stream. See the call site for why that distinction matters.
 --
 -- Kill-before-respawn is unconditional whenever an attempt fires (never
 -- "maybe still alive, skip the kill"): a stream can go quiet without its
@@ -982,6 +982,7 @@ function update()
   if is_owner then
     nvidia_stale_ticks = nvidia_stale_ticks + 1
     intel_stale_ticks = intel_stale_ticks + 1
+    stream_stale_ticks = stream_stale_ticks + 1
     -- Deliberately not the `A and B or C` ternary idiom: when B itself can
     -- be `false` (it can, here), that idiom silently falls through to C
     -- instead of returning `false` -- it only happens to be safe when C
@@ -993,22 +994,21 @@ function update()
     local intel_is_stale = intel_known_available and intel_stale_ticks >= STALE_TICKS
     noctalia.state.set(STALE_KEY, { nvidia = nvidia_is_stale, intel = intel_is_stale })
 
-    -- Respawn a single dead/hung stream independently of the other -- see
-    -- maybe_respawn's own comment for the full reasoning. Both calls share
-    -- nothing but the pure respawn_backoff arithmetic; nvidia's `respawn`
-    -- entry and intel's are never read or written by the other call, so a
-    -- broken NVIDIA stream can never affect Intel's backoff schedule or
-    -- vice versa. Only the Intel path needs `on_before_start`: it clears
-    -- intel_prev the same way a full stop_streams() teardown already does,
-    -- so the first line from the freshly-spawned helper seeds a new
-    -- baseline instead of computing a percent against a stale prior sample
-    -- from possibly minutes earlier.
-    maybe_respawn("nvidia", "NVIDIA", nvidia_is_stale, nvidia_stale_ticks,
-      "nvidia-smi dmon -d 2 -s pucm", start_nvidia_stream)
-    maybe_respawn("intel", "Intel iGPU", intel_is_stale, intel_stale_ticks,
-      HELPER, start_intel_stream, function()
-        intel_prev.render, intel_prev.ts = nil, nil
-      end)
+    -- Respawn the shared helper when it stops producing, on the same
+    -- exponential backoff the two-stream version used -- see maybe_respawn's
+    -- own comment for the full reasoning.
+    --
+    -- Gated on stream_stale_ticks, NOT on either per-GPU counter: a machine
+    -- with one GPU leaves the other card's counter climbing forever, which
+    -- would read as a permanently broken stream and trigger an endless
+    -- kill-and-restart of a process that is working perfectly.
+    --
+    -- No `on_before_start` hook anymore. It existed only to clear the Intel
+    -- percent baseline (intel_prev) so a freshly-spawned helper did not
+    -- compute a delta against a sample from minutes earlier; nvtop reports
+    -- utilisation directly, so there is no baseline to invalidate.
+    maybe_respawn("gpu", "GPU", stream_stale_ticks >= STALE_TICKS,
+      stream_stale_ticks, HELPER, start_gpu_stream)
   end
 
   -- History is sampled once per tick, in lockstep with cpu/ram/psi, so all

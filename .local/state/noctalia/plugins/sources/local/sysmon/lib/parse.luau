@@ -75,54 +75,55 @@ function parse.pressure(text)
   return out
 end
 
--- nvidia-smi dmon emits two header lines starting with '#', then data lines
--- of whitespace-separated numbers. Real column order, captured on this
--- machine into ~/scripts/noctalia-sysmon/fixtures/nvidia_dmon.txt via
--- `nvidia-smi dmon -d 2 -s pucm`: gpu pwr gtemp mtemp sm mem enc dec jpg ofa
--- mclk pclk fb bar1 ccpm.
+-- One line per GPU per tick from ~/bin/sysmon-gpu, which reframes nvtop's
+-- multi-line JSON into something a line-based runStream can consume:
 --
--- mtemp is "-" on this machine (no dedicated memory-temp sensor), so
--- tonumber("-") is nil for that column. table.insert(fields, tonumber(tok))
--- would silently skip that nil and shift every later column left by one --
--- sm (usage) would be read from mem's slot instead. Assign by explicit
--- position (fields[count] = ...) so a hole stays a hole and later columns
--- keep their real index.
-function parse.nvidia_dmon(line)
-  if not line or string.match(line, "^%s*#") then return nil end
-  local fields = {}
-  local count = 0
-  for tok in string.gmatch(line, "%S+") do
-    count = count + 1
-    fields[count] = tonumber(tok)
-  end
-  if count < 6 or not fields[3] or not fields[5] or not fields[6] then return nil end
-  return { temp = fields[3], usage = fields[5], mem_usage = fields[6] }
-end
-
--- Pipe-delimited key/value pairs after a leading nanosecond timestamp, as
--- emitted by /usr/libexec/ksystemstats_intel_helper (ships with ksystemstats,
--- already carries cap_perfmon, needs no perf_event_paranoid change).
-function parse.intel_helper(line)
+--   AVAIL|intel,nvidia     once, at stream start
+--   INTEL|30               utilisation percent
+--   NVIDIA|43|9|18         temp C | utilisation % | VRAM used %
+--
+-- Replaces the two previous sources, parse.nvidia_dmon (nvidia-smi dmon) and
+-- parse.intel_helper (KDE's ksystemstats_intel_helper), with one. The Intel
+-- helper had to go -- ksystemstats pulls the Plasma stack this machine was
+-- reinstalled to shed -- and once nvtop was the Intel source, running
+-- nvidia-smi alongside it meant two streams for data one process already had.
+--
+-- AVAIL is what the widget's availability probe used to derive from
+-- commandExists/fileExists. nvtop enumerating the devices is better evidence
+-- of what exists than which binaries happen to be installed.
+--
+-- No percent arithmetic here anymore: nvtop reports utilisation directly, so
+-- the old intel_percent() busy-nanoseconds-over-elapsed-nanoseconds delta
+-- (and the prior-sample baseline it needed) is gone with it.
+function parse.gpu_line(line)
   if not line then return nil end
-  local ts = string.match(line, "^(%d+)|")
-  if not ts then return nil end
-  local out = { timestamp = tonumber(ts) }
-  for key, value in string.gmatch(line, "|(%a+)|(%d+)") do
-    out[string.lower(key)] = tonumber(value)
-  end
-  if out.render == nil then return nil end
-  return out
-end
 
--- Busy-nanoseconds delta over elapsed-nanoseconds delta, matching upstream
--- LinuxIntelGpu: (value - lastUsage) * 100.0 / timediff.
-function parse.intel_percent(prev_render, prev_ts, render, ts)
-  local dt = ts - prev_ts
-  if dt <= 0 then return 0 end
-  local pct = math.floor(((render - prev_render) * 100) / dt + 0.5)
-  if pct < 0 then return 0 end
-  if pct > 100 then return 100 end
-  return pct
+  local avail = string.match(line, "^AVAIL|(.*)$")
+  if avail then
+    local out = { kind = "avail", intel = false, nvidia = false }
+    for name in string.gmatch(avail, "[^,]+") do
+      if name == "intel" then out.intel = true end
+      if name == "nvidia" then out.nvidia = true end
+    end
+    return out
+  end
+
+  local intel = string.match(line, "^INTEL|(%d+)$")
+  if intel then
+    return { kind = "intel", pct = tonumber(intel) }
+  end
+
+  local temp, usage, mem = string.match(line, "^NVIDIA|(%d+)|(%d+)|(%d+)$")
+  if temp then
+    return {
+      kind = "nvidia",
+      temp = tonumber(temp),
+      usage = tonumber(usage),
+      mem_usage = tonumber(mem),
+    }
+  end
+
+  return nil
 end
 
 -- df --output=avail,size -B1 prints a header then one data line of bytes.

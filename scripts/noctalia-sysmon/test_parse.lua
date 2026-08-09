@@ -377,66 +377,63 @@ check("unknown metric name stays ok",    th.level("nonsense", 999) == "ok")
 check("unknown maps to a dimmed token",  th.color("unknown") == "on_surface/0.4")
 check("unknown is not the same as ok",   th.color("unknown") ~= th.color("ok"))
 
--- nvidia-smi dmon: two header lines start with '#'; data lines are
--- whitespace-separated numbers. Real column order, captured on this machine
--- into fixtures/nvidia_dmon.txt via `nvidia-smi dmon -d 2 -s pucm`, is:
--- gpu pwr gtemp mtemp sm mem enc dec jpg ofa mclk pclk fb bar1 ccpm -- this
--- matches the brief's assumed order exactly.
-check("dmon header returns nil", parse.nvidia_dmon("# gpu   pwr gtemp") == nil)
-check("dmon second header returns nil", parse.nvidia_dmon("# Idx      W      C") == nil)
+-- (nvidia-smi dmon tests removed: parse.gpu_line is now the only GPU
+-- source -- see its tests below.)
 
-local n = parse.nvidia_dmon("    0    12    41     -    45     8     0     0")
-check("dmon data returns a table", type(n) == "table")
-check("dmon gives a numeric usage", type(n.usage) == "number")
-check("dmon gives a numeric temp", type(n.temp) == "number")
+-- Real captured output from ~/bin/sysmon-gpu on this machine, so a change in
+-- the shim's line format fails here rather than silently blanking the widget.
+local gpu_fixture = read("sysmon_gpu.txt")
+local saw = { avail = 0, intel = 0, nvidia = 0 }
+for line in string.gmatch(gpu_fixture, "[^\n]+") do
+  local g = parse.gpu_line(line)
+  check("fixture line parses: " .. line, g ~= nil)
+  if g then saw[g.kind] = saw[g.kind] + 1 end
+end
+check("fixture announces availability exactly once", saw.avail == 1)
+check("fixture carries intel samples", saw.intel > 0)
+check("fixture carries nvidia samples", saw.nvidia > 0)
 
--- mtemp is "-" (no dedicated memory-temp sensor) in real captures. A naive
--- table.insert(fields, tonumber(tok)) silently skips that nil and shifts
--- every later column left by one -- sm (usage) would read as 8 (mem) and
--- mem_usage would read as 0 (enc). Pin literal values, not just their type,
--- so that regression cannot creep back in.
-check("dmon temp is gtemp not shifted", n.temp == 41)
-check("dmon usage is sm not shifted", n.usage == 45)
-check("dmon mem_usage is mem not shifted", n.mem_usage == 8)
+-- The stream is wrapped in `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'` so
+-- stop_streams can recover an exact, killable PID (see widget.luau for why
+-- runStream gives no handle). The onLine callback intercepts that sentinel
+-- before it reaches the parser, but the parser must independently reject it
+-- too -- belt and suspenders, not a single point of failure.
+check("sentinel line is not misread as data", parse.gpu_line("NOCTALIA_PID:12345") == nil)
 
-local dmon_fixture = read("nvidia_dmon.txt")
-local dmon_data_line = string.match(dmon_fixture, "\n[^\n]*\n[^\n]*\n([^\n]+)")
-local n2 = parse.nvidia_dmon(dmon_data_line)
-check("dmon real fixture line parses", type(n2) == "table")
-check("dmon real fixture gives numeric temp", type(n2) == "table" and type(n2.temp) == "number")
+-- parse.gpu_line: the single ~/bin/sysmon-gpu (nvtop) stream, replacing the
+-- old nvidia_dmon + intel_helper + intel_percent trio.
+local a = parse.gpu_line("AVAIL|intel,nvidia")
+check("avail returns a table", type(a) == "table" and a.kind == "avail")
+check("avail sees both GPUs", a.intel == true and a.nvidia == true)
 
-check("dmon garbage returns nil", parse.nvidia_dmon("not dmon data at all") == nil)
-check("dmon nil line returns nil", parse.nvidia_dmon(nil) == nil)
+local only = parse.gpu_line("AVAIL|nvidia")
+check("avail with one GPU leaves the other false",
+      only.nvidia == true and only.intel == false)
+-- A machine with no GPU at all still announces, so the widget can tell
+-- "probed, found nothing" from "never probed" -- the panel renders those
+-- two states differently.
+local none = parse.gpu_line("AVAIL|")
+check("empty avail is still a table, both false",
+      type(none) == "table" and none.intel == false and none.nvidia == false)
 
--- panel.luau's NVIDIA_CMD/HELPER_CMD wrap each stream in
--- `sh -c 'echo NOCTALIA_PID:$$; exec <cmd>'` so stop_streams can recover an
--- exact, killable PID (see panel.luau for why runStream gives no handle).
--- The panel's onLine callback intercepts that sentinel line before it ever
--- reaches these parsers, but both must independently reject it as
--- unparseable too -- belt and suspenders, not a single point of failure.
-check("dmon sentinel line is not misread as data", parse.nvidia_dmon("NOCTALIA_PID:12345") == nil)
+local i = parse.gpu_line("INTEL|30")
+check("intel kind", i.kind == "intel")
+check("intel percent parsed", i.pct == 30)
 
-local i = parse.intel_helper("1000176177|Frequency|191|Interrupts|872|Render|457711853|Copy|0|Video|0|Enhance|0")
-check("intel returns a table", type(i) == "table")
-check("intel timestamp parsed", i.timestamp == 1000176177)
-check("intel render counter parsed", i.render == 457711853)
-check("intel garbage returns nil", parse.intel_helper("nonsense") == nil)
-check("intel nil line returns nil", parse.intel_helper(nil) == nil)
-check("intel sentinel line is not misread as data", parse.intel_helper("NOCTALIA_PID:12345") == nil)
+local n = parse.gpu_line("NVIDIA|43|9|18")
+check("nvidia kind", n.kind == "nvidia")
+check("nvidia temp parsed", n.temp == 43)
+check("nvidia usage parsed", n.usage == 9)
+check("nvidia mem parsed", n.mem_usage == 18)
 
-local intel_fixture = read("intel_helper.txt")
-local intel_first_line = string.match(intel_fixture, "^([^\n]+)")
-local i2 = parse.intel_helper(intel_first_line)
-check("intel real fixture line parses", type(i2) == "table" and type(i2.render) == "number")
-
--- Counter deltas, not absolute values: the helper reports cumulative
--- nanoseconds busy, exactly as KDE's LinuxIntelGpu computes it.
-check("intel percent from deltas",
-      parse.intel_percent(0, 0, 500000000, 1000000000) == 50)
-check("intel percent clamps at 100",
-      parse.intel_percent(0, 0, 2000000000, 1000000000) == 100)
-check("intel percent zero timedelta is 0",
-      parse.intel_percent(0, 0, 100, 0) == 0)
+-- Malformed lines must be nil rather than a partially-filled table: the
+-- widget publishes whatever comes back straight to noctalia.state, so a
+-- half-parsed reading would render as a confident wrong number.
+check("gpu garbage returns nil", parse.gpu_line("nonsense") == nil)
+check("gpu nil line returns nil", parse.gpu_line(nil) == nil)
+check("intel with no value returns nil", parse.gpu_line("INTEL|") == nil)
+check("nvidia with missing field returns nil", parse.gpu_line("NVIDIA|43|9") == nil)
+check("intel with non-numeric value returns nil", parse.gpu_line("INTEL|abc") == nil)
 
 -- df --output=avail,size -B1 / | tail -1 prints a header then one data line
 -- of bytes; the test fixes literal figures so a used_pct rounding regression
