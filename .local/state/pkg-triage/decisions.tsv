@@ -1,0 +1,519 @@
+ImageMagick-devel	approve	
+R	deny	
+R-V8	skip	
+SDL3-devel	deny	
+SDL3_image-devel	deny	
+ShellCheck	approve	
+aajohan-comfortaa-fonts	deny	
+aalib	deny	
+abrt-desktop	question	what is this used for?
+abseil-cpp-devel	deny	
+acpica-tools	question	what is this?
+adwaita-gtk2-theme	question	do i need this?
+akonadi-server-mysql	question	do i need
+akregator	question	do i need
+anaconda	question	idk if we should install this
+anaconda-install-env-deps	skip	
+android-tools	approve	
+ark	deny	
+asciiquarium	question	do i need?
+audiocd-kio	question	do i need?
+autossh	question	do i need
+babl	deny	
+bats	approve	
+bison	question	do i need?
+bluedevil	deny	
+breeze-icon-theme	deny	
+breeze-icon-theme-fedora	deny	
+btrfs-assistant	approve	
+byacc	skip	
+calf	approve	
+cava	approve	
+cbonsai	deny	
+ccache	deny	
+cheat	approve	
+cheat-community-cheatsheets	approve	
+clang-devel	deny	
+clang-tools-extra	deny	
+cmatrix	approve	
+colord-kde	deny	
+cowsay	approve	
+crontabs	deny	
+cscope	deny	
+dbus-glib	deny	
+ddd	approve	
+dhcp-client	question	do i need?
+diffstat	approve	
+direnv	approve	
+dnf-utils	question	do i need?
+dolphin	deny	
+doxygen	deny	
+dracut-live	question	do i need?
+dracut-network	question	do i need?
+dragon	deny	
+easyeffects	approve	
+ed	question	do i need?
+elisa-player	deny	
+entr	approve	
+epiphany	deny	
+extra-cmake-modules	deny	
+fastfetch	approve	
+fedora-release-kde-desktop	deny	
+ffmpeg-free-devel	deny	
+ffmpegthumbs	deny	
+fftw-devel	deny	
+filelight	approve	
+firewall-config	question	do i need?
+flatpak-kcm	question	do i need?
+flex	question	do i need?
+flexiblas	deny	
+flexiblas-netlib	deny	
+flexiblas-openblas-openmp	question	?
+flexiblas-openblas-serial	question	?
+fluid-soundfont-common	deny	
+akmod-nvidia	approve	
+ani-cli	approve	
+claude-desktop-unofficial	approve	
+discord	approve	
+ente	approve	
+fuse	approve	
+gamescope	approve	
+gimp	approve	
+git-crypt	approve	
+git-filter-repo	approve	
+git-lfs	approve	
+gnome-pomodoro	approve	
+godot	approve	
+golang	approve	
+gstreamer1-plugins-bad-freeworld	approve	
+gstreamer1-plugins-ugly	approve	
+helvum	approve	
+heroic-games-launcher-bin	approve	
+htop	question	i use btop, do i need btop?
+httpie	question	do i still use this?
+hyfetch	approve	
+intel-media-driver	approve	
+just	approve	
+kgpg	approve	
+kleopatra	question	do we need this?
+kmod-v4l2loopback	approve	
+libheif-freeworld	approve	
+libva-intel-driver	approve	
+libva-utils	approve	
+lm_sensors	approve	
+lolcat	approve	
+lpf-spotify-client	approve	
+luarocks	approve	
+lutris	approve	
+lv2-dragonfly-reverb	approve	is this not related to KDE?
+mpv	approve	
+ncdu	approve	
+niri	approve	
+noctalia	approve	
+nvtop	approve	
+obs-studio	approve	
+obs-studio-plugin-vkcapture	approve	
+pass	approve	
+patch	question	do i need?
+perf	approve	
+pinentry-qt	question	do i need?
+pipewire-codec-aptx	question	what does this provide and do we need this?
+pipx	approve	i dont use this anymore because it added so much bloat but i will keep it
+postgresql	question	i may install this if needs be but probably going to install in future if needs be
+powertop	approve	
+protobuf-compiler	question	install later?
+proton-mail	approve	
+proton-vpn-gnome-desktop	approve	
+protonvpn-stable-release	approve	
+python3-pip	question	do we need?
+qadwaitadecorations-qt5	question	i dont use adwait
+qbz	approve	
+qdirstat	approve	
+qjackctl	approve	
+rawtherapee	approve	
+rclone	approve	
+rpi-imager	question	may install later
+rpmfusion-free-release	approve	
+rpmfusion-nonfree-release	approve	
+smartmontools	approve	
+snapper	approve	
+solaar	approve	
+spotify-client	approve	
+strace	approve	
+tailscale	approve	
+tig	approve	
+tldr	approve	
+uv	approve	
+v4l-utils	approve	
+vlc	approve	
+wine	approve	
+winetricks	approve	
+wiremix	approve	
+wlogout	question	do we need this? I will consider installing it since noctalia does have a lock screen and i think we are using gnome login page but idk, lets review this
+xorg-x11-drv-nvidia-cuda	approve	
+akmod-nvidia	approve	already installed (verified 2026-08-08)
+bison	approve	already installed (verified 2026-08-08)
+btrfs-assistant	approve	already installed (verified 2026-08-08)
+cowsay	approve	already installed (verified 2026-08-08)
+direnv	approve	already installed (verified 2026-08-08)
+ed	approve	already installed (verified 2026-08-08)
+flex	approve	already installed (verified 2026-08-08)
+git-crypt	approve	already installed (verified 2026-08-08)
+kernel-devel	approve	already installed (verified 2026-08-08)
+libappindicator-gtk3	approve	already installed (verified 2026-08-08)
+lolcat	approve	already installed (verified 2026-08-08)
+niri	approve	already installed (verified 2026-08-08)
+noctalia	approve	already installed (verified 2026-08-08)
+pass	approve	already installed (verified 2026-08-08)
+patch	approve	already installed (verified 2026-08-08)
+snapper	approve	already installed (verified 2026-08-08)
+tldr	approve	already installed (verified 2026-08-08)
+xorg-x11-drv-nvidia-cuda	approve	already installed (verified 2026-08-08)
+rstudio	approve	
+shfmt	approve	
+ungoogled-chromium	approve	
+xwaylandvideobridge	approve	
+xxd	approve	
+yabridge	approve	
+code	approve	
+figma-linux	approve	
+gwenview	question	will consider downloading
+homebank	question	difficult to keep up and i'm trying moneyex or whatever its called
+nbfc-linux	approve	theres config somewhere, i cant remember where, it could be in previous root
+nbfc-qt	approve	
+nvidia-container-toolkit	approve	
+okular	question	same as gwenview
+paperkey	approve	will consider using
+setroubleshoot	approve	will consider removing if i dont use it often
+stow	question	i use yadm
+supercollider	approve	
+thunderbird	approve	i wanna try use it but it hasnt been working out well for me
+wev	approve	
+containerd.io	deny	
+dialog	deny	
+docker-buildx-plugin	deny	
+docker-compose-plugin	deny	
+fluid-soundfont-gm	deny	
+fluid-soundfont-gs	deny	
+fluidsynth-libs	deny	
+gegl04	deny	
+gegl04-matting-levin	deny	
+gimp-libs	deny	
+git-subtree	deny	
+gnupg2-g13	deny	
+gnupg2-scdaemon	deny	
+gnupg2-utils	deny	
+gnupg2-wks	deny	
+golang-misc	deny	
+gom	deny	
+google-noto-sans-cham-fonts	deny	
+google-noto-sans-egyptian-hieroglyphs-fonts	deny	
+grub2-efi-ia32-cdboot	deny	
+grub2-efi-x64-cdboot	deny	
+grub2-efi-x64-modules	deny	
+grub2-pc	deny	
+grub2-tools-efi	deny	
+gtk2-immodule-xim	deny	
+gtk3-immodule-xim	deny	
+hfsplus-tools	deny	
+ibus-table-chinese-cangjie	deny	
+icoutils	deny	
+im-chooser	deny	
+imsettings	deny	
+imsettings-gsettings	deny	
+info	deny	
+irqbalance	deny	
+javapackages-bootstrap	deny	
+kernel-modules-extra	deny	
+kjournald	deny	
+kmod-nvidia-7.1.5-201.fc44.x86_64	deny	
+lash-libs	deny	
+libappstream-glib	deny	
+libFAudio	deny	
+libgdata	deny	
+libinstpatch	deny	
+libliftoff	deny	
+libmypaint	deny	
+libpeas1	deny	
+libsoup	deny	
+libwmf	deny	
+lua-lgi-compat	deny	bulk: rest of group
+lv2	deny	bulk: rest of group
+mingw32-libxml2	deny	bulk: rest of group
+mingw32-libxslt	deny	bulk: rest of group
+mingw32-SDL3	deny	bulk: rest of group
+mingw32-vkd3d	deny	bulk: rest of group
+mingw32-win-iconv	deny	bulk: rest of group
+mingw32-winpthreads	deny	bulk: rest of group
+mingw32-zlib	deny	bulk: rest of group
+mozjs128	deny	bulk: rest of group
+mypaint-brushes	deny	bulk: rest of group
+obs-studio-plugin-vkcapture-hook-libs	deny	bulk: rest of group
+openblas-openmp	deny	bulk: rest of group
+patchutils	deny	bulk: rest of group
+perl-Path-Tiny	deny	bulk: rest of group
+python3-moddb	deny	bulk: rest of group
+python3-protobuf	deny	bulk: rest of group
+python3-pypresence	deny	bulk: rest of group
+python3-websockets	deny	bulk: rest of group
+rpmfusion-free-appstream-data	deny	bulk: rest of group
+rpmfusion-nonfree-appstream-data	deny	bulk: rest of group
+samba-usershares	deny	bulk: rest of group
+sdl12-compat	deny	bulk: rest of group
+sssd-proxy	deny	bulk: rest of group
+suitesparse	deny	bulk: rest of group
+supercollider-sc3-plugins	deny	bulk: rest of group
+teamd	deny	bulk: rest of group
+texlive-collection-fontsrecommended	deny	bulk: rest of group
+texlive-ec	deny	bulk: rest of group
+texlive-latex	deny	bulk: rest of group
+udisks2-btrfs	deny	bulk: rest of group
+unixODBC	deny	bulk: rest of group
+vim-common	deny	bulk: rest of group
+vlc-plugin-ffmpeg	deny	bulk: rest of group
+vlc-plugin-gstreamer	deny	bulk: rest of group
+vlc-plugin-pipewire	deny	bulk: rest of group
+vlc-plugins-extra	deny	bulk: rest of group
+wine-alsa	deny	bulk: rest of group
+wine-core	deny	bulk: rest of group
+wine-pulseaudio	deny	bulk: rest of group
+wlroots0.18	deny	bulk: rest of group
+xcb-util-errors	deny	bulk: rest of group
+xorg-x11-fonts-misc	deny	bulk: rest of group
+xorg-x11-server-common	deny	bulk: rest of group
+autoconf	deny	
+automake	deny	bulk: rest of group
+compat-lua-devel	deny	bulk: rest of group
+freeglut-devel	deny	bulk: rest of group
+gcc-c++	deny	bulk: rest of group
+gdal-devel	deny	bulk: rest of group
+gdb	deny	bulk: rest of group
+geos-devel	deny	bulk: rest of group
+glew-devel	deny	bulk: rest of group
+glfw-devel	deny	bulk: rest of group
+glm-devel	deny	bulk: rest of group
+gmp-devel	deny	bulk: rest of group
+gobject-introspection-devel	deny	bulk: rest of group
+gperftools-devel	deny	bulk: rest of group
+gstreamer1-devel	deny	bulk: rest of group
+gstreamer1-plugins-base-devel	deny	bulk: rest of group
+gtk4-devel	deny	bulk: rest of group
+gtk4-layer-shell-devel	deny	bulk: rest of group
+gtk-layer-shell-devel	deny	bulk: rest of group
+haskell-platform	deny	bulk: rest of group
+indent	deny	bulk: rest of group
+java-latest-openjdk-devel	deny	bulk: rest of group
+junit	deny	bulk: rest of group
+libarchive-devel	deny	bulk: rest of group
+libcurl-devel	deny	bulk: rest of group
+libdb-devel	deny	bulk: rest of group
+libedit-devel	deny	bulk: rest of group
+libplasma-devel	deny	bulk: rest of group
+libtool	deny	bulk: rest of group
+libtree-sitter-devel	deny	bulk: rest of group
+libXxf86vm-devel	deny	bulk: rest of group
+libyaml-devel	deny	bulk: rest of group
+lz4-devel	deny	bulk: rest of group
+mesa-libGL-devel	deny	bulk: rest of group
+meson	deny	bulk: rest of group
+mingw32-crt	deny	bulk: rest of group
+mingw32-FAudio	deny	bulk: rest of group
+mingw32-filesystem	deny	bulk: rest of group
+mingw32-lcms2	deny	bulk: rest of group
+mingw32-libgcc	deny	bulk: rest of group
+mingw32-libjpeg-turbo	deny	bulk: rest of group
+mingw32-libpng	deny	bulk: rest of group
+mingw32-libstdc++	deny	bulk: rest of group
+mingw32-libtiff	deny	bulk: rest of group
+mpv-devel	deny	bulk: rest of group
+ncurses-devel	deny	bulk: rest of group
+ninja-build	deny	bulk: rest of group
+pam-devel	deny	bulk: rest of group
+proj-devel	deny	bulk: rest of group
+pulseaudio-libs-devel	deny	bulk: rest of group
+python3-devel	deny	bulk: rest of group
+qt6-qtwebsockets-devel	deny	bulk: rest of group
+readline-devel	deny	bulk: rest of group
+recode-devel	deny	bulk: rest of group
+rinutils-devel	deny	bulk: rest of group
+scdoc	deny	bulk: rest of group
+sdl2-compat-devel	deny	bulk: rest of group
+sqlite-devel	deny	bulk: rest of group
+systemtap	deny	bulk: rest of group
+tcl-devel	deny	bulk: rest of group
+tk-devel	deny	bulk: rest of group
+udunits2-devel	deny	bulk: rest of group
+unixODBC-devel	deny	bulk: rest of group
+uuid-devel	deny	bulk: rest of group
+valgrind	deny	bulk: rest of group
+wayland-protocols-devel	deny	bulk: rest of group
+wxGTK-devel	deny	bulk: rest of group
+xorg-x11-server-Xephyr	deny	bulk: rest of group
+akonadi-server	deny	
+imsettings-plasma	deny	bulk: rest of group
+initial-setup-gui-wayland-plasma	deny	bulk: rest of group
+kaccounts-integration-qt6	deny	bulk: rest of group
+kaccounts-providers	deny	bulk: rest of group
+kaddressbook	deny	bulk: rest of group
+kamera	deny	bulk: rest of group
+kamoso	deny	bulk: rest of group
+kcalc	deny	bulk: rest of group
+kcharselect	deny	bulk: rest of group
+kclock	deny	bulk: rest of group
+kdialog	deny	bulk: rest of group
+kdnssd	deny	bulk: rest of group
+kdotool	deny	bulk: rest of group
+keditbookmarks	deny	bulk: rest of group
+kfind	deny	bulk: rest of group
+khelpcenter	deny	bulk: rest of group
+kinfocenter	deny	bulk: rest of group
+kio-admin	deny	bulk: rest of group
+kio-gdrive	deny	bulk: rest of group
+kmahjongg	deny	bulk: rest of group
+kmail	deny	bulk: rest of group
+kmenuedit	deny	bulk: rest of group
+kmines	deny	bulk: rest of group
+kolourpaint	deny	bulk: rest of group
+konsole	deny	bulk: rest of group
+kontact	deny	bulk: rest of group
+korganizer	deny	bulk: rest of group
+kpat	deny	bulk: rest of group
+krdc	deny	bulk: rest of group
+krdp	deny	bulk: rest of group
+krfb	deny	bulk: rest of group
+kscreen	deny	bulk: rest of group
+kscreenlocker	deny	bulk: rest of group
+ksshaskpass	deny	bulk: rest of group
+kwalletmanager5	deny	bulk: rest of group
+kwebkitpart	deny	bulk: rest of group
+kwin	deny	bulk: rest of group
+kwrite	deny	bulk: rest of group
+neochat	deny	bulk: rest of group
+pam-kwallet	deny	bulk: rest of group
+phonon-qt6-backend-vlc	deny	bulk: rest of group
+polkit-kde	deny	bulk: rest of group
+qrca	deny	bulk: rest of group
+sddm	deny	bulk: rest of group
+sddm-breeze	deny	bulk: rest of group
+sddm-kcm	deny	bulk: rest of group
+sddm-wayland-plasma	deny	bulk: rest of group
+signon-kwallet-extension	deny	bulk: rest of group
+skanpage	deny	bulk: rest of group
+spectacle	deny	bulk: rest of group
+anaconda-live	deny	
+grub2-efi-ia32	deny	bulk: rest of group
+initial-setup-gui	deny	bulk: rest of group
+kitty	deny	bulk: rest of group
+kmod-nvidia-7.1.5-100.fc43.x86_64	deny	bulk: rest of group
+kmod-nvidia-7.1.5-101.fc43.x86_64	deny	bulk: rest of group
+kmod-v4l2loopback-7.1.5-100.fc43.x86_64	deny	bulk: rest of group
+kmod-v4l2loopback-7.1.5-101.fc43.x86_64	deny	bulk: rest of group
+kmod-v4l2loopback-7.1.5-201.fc44.x86_64	deny	bulk: rest of group
+kwin-effect-roundcorners	deny	bulk: rest of group
+livesys-scripts	deny	bulk: rest of group
+mactel-boot	deny	bulk: rest of group
+shim-ia32	deny	bulk: rest of group
+steam-arch-transition	deny	bulk: rest of group
+terminus-fonts-console	deny	bulk: rest of group
+docker-ce	deny	
+docker-ce-cli	deny	
+gnome-sound-recorder	approve	
+gnome-terminal	deny	
+isomd5sum	deny	
+kmouth	deny	
+libreoffice-draw	deny	
+libreoffice-math	deny	
+lmms	approve	
+ltrace	deny	
+minicom	deny	
+mosquitto	deny	
+nmap	approve	
+plantuml	approve	
+protonmail-bridge	approve	
+rofi	deny	
+rsyslog	deny	
+sl	approve	
+strawberry	approve	
+subversion	deny	
+swaybg	deny	
+tesseract	deny	
+testdisk	deny	
+texlive-scheme-full	question	i may reinstall if needed, i just want a clean slate with tex
+tigervnc	question	may reinstall idk
+toilet	approve	
+util-linux-script	deny	
+waypipe	approve	
+wdiff	question	i may use this idk
+wireshark	deny	
+wivrn	deny	
+wkhtmltopdf	approve	
+wlr-randr	skip	
+qemu	question	may use it again for docker or rpi
+vim-enhanced	question	is this already installed?
+R	approve	VD resit is R-based (coordinator 2026-08-08)
+flexiblas-openblas-openmp	approve	multi-threaded BLAS for R numeric work
+R-V8	deny	install ad-hoc only if an R package demands it
+swi-prolog	approve	AI resit; coordinator said "pl" but that name is gone
+swi-prolog-doc	approve	offline help/1 while coding Prolog
+godot	approve	AA resit artifact, GDScript
+blender	approve	AA asset workflow
+pandoc-cli	approve	AI justfile report target, markdown->PDF
+postgresql	deny	no module touches a DB this summer
+protobuf-compiler	deny	nothing this summer uses protobuf
+texlive-scheme-full	deny	zero LaTeX submissions this summer
+htop	deny	btop 1.4.7 already installed
+vim-enhanced	deny	vim-minimal gives /usr/bin/vi; neovim 0.12.4 is primary
+pinentry-qt	deny	pinentry-gnome3 installed and working with gpg
+gwenview	deny	loupe 50.0 already installed
+okular	deny	papers 49.7 already installed
+dhcp-client	deny	NetworkManager has its own DHCP; ISC dhclient is legacy
+wdiff	deny	git diff --word-diff does this natively
+wlogout	deny	noctalia settings already carry logout/session
+firewall-config	deny	GUI for firewalld; firewall-cmd covers it
+akonadi-server-mysql	deny	Akonadi deliberately disabled
+akregator	deny	KDE feed reader; on niri now
+audiocd-kio	deny	KDE CD ripping slave
+kleopatra	deny	KDE GPG GUI; pass + gpg CLI is the workflow
+flatpak-kcm	deny	KDE settings module; use Flatseal if needed
+qadwaitadecorations-qt5	deny	you said you do not use Adwaita
+adwaita-gtk2-theme	deny	GTK2 is effectively dead
+anaconda	deny	the Fedora installer itself
+dracut-live	deny	for building live images
+dracut-network	deny	network/NFS root; yours is local LUKS
+abrt-desktop	deny	automatic crash reporting, not wanted
+acpica-tools	deny	ACPI table debug; your notes say do not revisit the dGPU firmware
+homebank	deny	moving to Money Manager EX instead
+stow	deny	you use yadm
+httpie	deny	no config anywhere; curl covers it
+asciiquarium	deny	novelty only
+flexiblas-openblas-serial	deny	the openmp variant is the useful one
+tigervnc	deny	no remote-desktop use case; reinstall if that changes
+dnf-utils	deny	mostly superseded by dnf5
+pipewire-codec-aptx	deny	only helps if the BT device supports aptX
+python3-pip	deny	uv/pipx are the chosen tools; pip pulled in when needed
+pipx	approve	RESTORE.md: convert-pdf pre-commit hooks fail without it
+kgpg	deny	101 KF6 packages for a GPG GUI
+kgpg	deny	101 KF6 packages just for a GPG GUI; pass+gpg+pinentry-gnome3 already work
+R	approve	MANUAL: sudo dnf install --setopt=install_weak_deps=False R flexiblas-openblas-openmp  (plain install adds 262 texlive pkgs)
+flexiblas-openblas-openmp	approve	MANUAL: install alongside R with the same weak-deps flag
+ente	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+figma-linux	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+nbfc-linux	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+nbfc-qt	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+proton-mail	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+protonmail-bridge	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+qbz	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+rstudio	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+spotify-client	approve	MANUAL: not in any enabled repo - see third-party-repos.tsv in the kit
+filelight	deny	pulls 48 kf6 packages; qdirstat does the same job
+filelight	deny	pulls 48 kf6 + 6 plasma packages; qdirstat does the same job with none
+blender	approve	MANUAL: sudo dnf install --setopt=install_weak_deps=False blender  (plain adds 44 pkgs / 347 MiB of pyproj+proj geodata for GIS add-ons you will not use)
+python3-pip	approve	reversed 2026-08-08: needed to manage the 4GB user site-packages; uv pip targets /usr not user site
+qbz	approve	DONE: flatpak com.blitzfc.qbz (already installed)
+proton-mail	approve	DONE: flatpak me.proton.Mail (not a manual RPM)
+protonmail-bridge	approve	DONE: flatpak ch.protonmail.protonmail-bridge (kit wrongly said manual RPM)
+ente	approve	DONE: flatpak io.ente.photos (Photos only, chosen 2026-08-09)
+figma-linux	approve	DONE: AppImage in ~/.AppImages, needs GearLever update source set in GUI
+autossh	approve	chosen 2026-08-09, VPS roadmap
+qemu	deny	not wanted 2026-08-09
+rpi-imager	deny	not wanted 2026-08-09
