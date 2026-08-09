@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=RStudio
+GenericName=Integrated Development Environment for R
+Comment=Statistical computing and graphics IDE
+Exec=/home/cadrianmae/.local/bin/rstudio %F
+Icon=rstudio
+Terminal=false
+Categories=Development;IDE;
+MimeType=text/x-r-source;text/x-r;text/x-R;text/x-r-doc;text/x-r-sweave;text/x-r-markdown;text/x-r-html;text/x-r-presentation;application/x-r-data;application/x-r-project;
+Keywords=R;statistics;data;analysis;
+StartupWMClass=rstudio
+StartupNotify=true

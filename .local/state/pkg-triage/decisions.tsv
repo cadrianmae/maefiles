@@ -517,3 +517,4 @@ figma-linux	approve	DONE: AppImage in ~/.AppImages, needs GearLever update sourc
 autossh	approve	chosen 2026-08-09, VPS roadmap
 qemu	deny	not wanted 2026-08-09
 rpi-imager	deny	not wanted 2026-08-09
+rstudio	approve	DONE: portable tarball -> ~/.local/opt/rstudio-2026.07.1+147, stable symlink ~/.local/opt/rstudio, launcher in ~/.local/share/applications
