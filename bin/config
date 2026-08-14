@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+# config -- open a config file or directory in $EDITOR by short name.
+#
+#   config              pick a target with fzf
+#   config niri         open the niri config
+#   config -a           pick from every yadm-tracked file
+#   config -l           list every target and whether it exists
+#   config -p niri      print the path instead of opening it
+#   config -s wez       search targets matching a substring
+#   config --edit-self  edit this script (to add a target)
+
+set -euo pipefail
+
+# name -> path. Paths are relative to $HOME. Directories are fine: the editor
+# opens them with its own file browser.
+declare -A TARGETS=(
+    # editor / terminal / shell
+    [nvim]=".config/nvim"
+    [nvim-plugins]=".config/nvim/lua/plugins"
+    [wezterm]=".config/wezterm/wezterm.lua"
+    [wezterm-colors]=".config/wezterm/colors"
+    [kitty]=".config/kitty/kitty.conf"
+    [zshrc]=".zshrc"
+    [zshenv]=".zshenv"
+    [tmux]=".tmux.conf"
+
+    # niri session
+    [niri]=".config/niri/config.kdl"
+    [niri-binds]=".config/niri/conf.d/binds.kdl"
+    [niri-conf.d]=".config/niri/conf.d"
+    [noctalia]=".config/noctalia"
+    [fuzzel]=".config/fuzzel/fuzzel.ini"
+    [mako]=".config/mako/config"
+
+    # audio
+    [easyeffects]=".config/easyeffects"
+    [pipewire]=".config/pipewire"
+    [wireplumber]=".config/wireplumber"
+    [speechd]=".config/speech-dispatcher"
+
+    # tools
+    [git]=".gitconfig"
+    [gh]=".config/gh/config.yml"
+    [bat]=".config/bat/config"
+    [btop]=".config/btop/btop.conf"
+    [cava]=".config/cava/config"
+    [rclone]=".config/rclone/rclone.conf"
+    [obs]=".config/obs-studio"
+    [gencast]=".config/gencast"
+
+    # claude
+    [claude]=".claude/CLAUDE.md"
+    [claude-settings]=".claude/settings.json"
+    [claude-memory]=".claude/memory.md"
+    [claude-rules]=".claude/rules"
+
+    # system / session
+    [systemd]=".config/systemd/user"
+    [pomodoro]=".config/pomodoro"
+    [autostart]=".config/autostart"
+    [mimeapps]=".config/mimeapps.list"
+    [user-dirs]=".config/user-dirs.dirs"
+)
+
+SELF="${BASH_SOURCE[0]}"
+EDIT="${VISUAL:-${EDITOR:-nvim}}"
+
+die() {
+    printf '[ERROR] %s\n' "$1" >&2
+    exit 1
+}
+
+path_of() {
+    printf '%s/%s\n' "$HOME" "${TARGETS[$1]}"
+}
+
+tilde() {
+    printf '%s\n' "${1/#"$HOME"/\~}"
+}
+
+sorted_names() {
+    printf '%s\n' "${!TARGETS[@]}" | sort
+}
+
+# Open in the outer nvim when run from a :terminal, otherwise a fresh editor.
+open_target() {
+    local path="$1"
+    if [[ -n "${NVIM:-}" ]] && command -v nvr >/dev/null 2>&1; then
+        nvr --remote "$path"
+    else
+        "$EDIT" "$path"
+    fi
+}
+
+list_targets() {
+    local name path mark
+    while read -r name; do
+        path="$(path_of "$name")"
+        if [[ -e "$path" ]]; then mark="[OK]  "; else mark="[MISS]"; fi
+        printf '%s %-16s %s\n' "$mark" "$name" "$(tilde "$path")"
+    done < <(sorted_names)
+}
+
+pick_target() {
+    command -v fzf >/dev/null 2>&1 || die "no target given and fzf is not installed"
+    sorted_names | fzf --prompt='config> ' --height=40% --reverse \
+        --preview="ls -1 $HOME/{} 2>/dev/null || head -40 $HOME/{}" \
+        --preview-window=hidden \
+        --bind='?:toggle-preview'
+}
+
+# Every yadm-tracked file, not just the curated registry. Paths from `yadm list`
+# are relative to the repo root, which is $HOME.
+pick_tracked() {
+    command -v fzf >/dev/null 2>&1 || die "-a needs fzf"
+    command -v yadm >/dev/null 2>&1 || die "-a needs yadm"
+    local rel
+    rel="$(yadm list -a | sort | fzf --prompt='yadm> ' --height=60% --reverse \
+        --preview="head -60 $HOME/{}" --preview-window='right:60%:hidden' \
+        --bind='?:toggle-preview')" || return 0
+    [[ -n "$rel" ]] || return 0
+    printf '%s/%s\n' "$HOME" "$rel"
+}
+
+usage() {
+    sed -n '2,11p' "$SELF" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+    local name
+    case "${1-}" in
+        -h | --help)
+            usage
+            return 0
+            ;;
+        -l | --list)
+            list_targets
+            return 0
+            ;;
+        -a | --all)
+            local tracked
+            tracked="$(pick_tracked)"
+            [[ -n "$tracked" ]] || return 0
+            open_target "$tracked"
+            return 0
+            ;;
+        --complete) # for shell completion
+            sorted_names
+            return 0
+            ;;
+        --edit-self)
+            open_target "$SELF"
+            return 0
+            ;;
+        -s | --search)
+            [[ -n "${2-}" ]] || die "usage: config -s PATTERN"
+            list_targets | grep -i -- "$2" || die "no target matches '$2'"
+            return 0
+            ;;
+        -p | --path)
+            [[ -n "${2-}" ]] || die "usage: config -p NAME"
+            [[ -v TARGETS[$2] ]] || die "unknown target '$2' (try: config -l)"
+            path_of "$2"
+            return 0
+            ;;
+        -*)
+            die "unknown option '$1' (try: config --help)"
+            ;;
+        "")
+            name="$(pick_target)"
+            [[ -n "$name" ]] || return 0
+            ;;
+        *)
+            name="$1"
+            ;;
+    esac
+
+    if [[ ! -v TARGETS[$name] ]]; then
+        printf '[ERROR] unknown target %s\n' "$name" >&2
+        list_targets | grep -i -- "$name" >&2 || true
+        printf '[INFO] see all targets with: config -l\n' >&2
+        return 1
+    fi
+
+    local path
+    path="$(path_of "$name")"
+    [[ -e "$path" ]] || die "$name maps to $(tilde "$path"), which does not exist"
+
+    open_target "$path"
+}
+
+main "$@"
