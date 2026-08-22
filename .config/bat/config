@@ -1,4 +1,4 @@
 # Match nvim catppuccin: macchiato for dark, latte for light
---theme="Catppuccin Macchiato"
 --theme-dark="Catppuccin Macchiato"
 --theme-light="Catppuccin Latte"
+--theme=noctalia

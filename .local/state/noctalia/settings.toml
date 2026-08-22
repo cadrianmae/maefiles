@@ -4,7 +4,7 @@ config_version = 8
 enable_sounds = true
 
 [bar.default]
-center = [ "clock", "audio_visualizer" ]
+center = [ "cat", "clock", "audio_visualizer" ]
 end = [
     "media",
     "tray",
@@ -21,7 +21,7 @@ end = [
 ]
 margin_ends = 8
 scale = 1.1000000089406967
-start = [ "launcher", "active_window", "wallpaper", "workspaces", "mae/sysmon:sysmon" ]
+start = [ "launcher", "active_window", "wallpaper", "workspaces", "widget", "mae/sysmon:sysmon" ]
 
 [control_center.calendar]
 show_week_numbers = true
@@ -30,6 +30,7 @@ show_week_numbers = true
 enabled = true
 icon_size = 36
 launcher_position = "start"
+pinned = [ "org.wezfurlong.wezterm", "zen", "obsidian", "com.blitzfc.qbz" ]
 reserve_space = false
 show_dots = true
 smart_auto_hide = true
@@ -104,8 +105,11 @@ orientation = "vertical"
 position = "bottom_center"
 position_vertical = "center_right"
 
+[plugin_settings."davemhammer/obsidian"]
+vault_path = "~/Documents/MaeNotes"
+
 [plugins]
-enabled = [ "mae/sysmon" ]
+enabled = [ "mae/sysmon", "noctalia/bitwarden", "noctalia/bongocat", "mae/focus-timer" ]
 
     [[plugins.source]]
     kind = "git"
@@ -122,8 +126,14 @@ enabled = [ "mae/sysmon" ]
     location = "/home/cadrianmae/.local/state/noctalia/plugins/sources/local"
     name = "local"
 
+    [[plugins.source]]
+    kind = "path"
+    location = "/home/cadrianmae/git/github.com/cadrianmae/focustimer-bridge/frontends/noctalia"
+    name = "focustimer"
+
 [shell]
 avatar_path = "/var/lib/AccountsService/icons/cadrianmae"
+launch_apps_as_systemd_services = true
 panel_anchor_bar = "default"
 polkit_agent = true
 
@@ -179,14 +189,15 @@ polkit_agent = true
     variant = "destructive"
 
 [theme]
-builtin = "Catppuccin"
-community_palette = "Oxocarbon"
+builtin = "Ayu"
+community_palette = "ADW"
 custom_palette = "Lumae-Midnight"
-mode = "dark"
+mode = "auto"
 source = "custom"
 
     [theme.templates]
     builtin_ids = [ "gtk3", "gtk4", "niri", "qt", "wezterm" ]
+    community_ids = [ "bat" ]
 
 [wallpaper]
 directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
@@ -195,16 +206,40 @@ directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
     enabled = true
 
     [wallpaper.default]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
 
     [wallpaper.last]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
 
     [wallpaper.monitors.HDMI-A-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
 
     [wallpaper.monitors.eDP-1]
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+
+    [[wallpaper.favorite]]
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    theme_mode = "auto"
+
+    [[wallpaper.favorite]]
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+    theme_mode = "auto"
+
+    [[wallpaper.favorite]]
+    custom_palette = "Lumae-Midnight"
+    palette_source = "custom"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/hiep-duong-5lfi9EHs6Vg-unsplash.jpg"
+    theme_mode = "dark"
+
+    [[wallpaper.favorite]]
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
+    theme_mode = "auto"
+
+    [[wallpaper.favorite]]
+    custom_palette = "Lumae-Midnight"
+    palette_source = "custom"
     path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
+    theme_mode = "auto"
 
 [widget.active_window]
 max_length = 128
@@ -221,6 +256,18 @@ width = 96
 
 [widget.brightness]
 show_label = false
+
+[widget.cat]
+audio_spectrum = true
+input_devices = [
+    "/dev/input/by-path/platform-i8042-serio-0-event-kbd",
+    "/dev/input/by-id/usb-Logitech_USB_Receiver-if02-event-kbd",
+    "/dev/input/by-id/usb-Keychron_Keychron_Link-if02-event-kbd"
+]
+scale = 2.0
+tappy_mode = true
+type = "noctalia/bongocat:cat"
+use_mpris_filter = true
 
 [widget.clock]
 anchor = true
@@ -243,3 +290,6 @@ capsule = true
 
 [widget.volume]
 show_label = false
+
+[widget.widget]
+type = "mae/focus-timer:focus-timer"

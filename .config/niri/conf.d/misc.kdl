@@ -6,6 +6,16 @@ environment {
     MOZ_ENABLE_WAYLAND "1"
     // For Electron apps (Vesktop, VS Code, etc.) to run Wayland too, uncomment:
     // ELECTRON_OZONE_PLATFORM_HINT "auto"
+
+    // Load qt6ct so Qt apps pick up the Noctalia palette.
+    //
+    // Noctalia's qt template regenerates qt5ct/qt6ct/colors/noctalia.conf on
+    // every theme change, and qt6ct.conf already points at it
+    // (custom_palette=true, style=Fusion) -- but without this variable Qt never
+    // loads qt6ct at all, so the whole generated palette was dead weight.
+    // XDG_CURRENT_DESKTOP=niri also stops Qt auto-selecting a KDE/GNOME theme,
+    // so there is no fallback: unset here means unthemed.
+    QT_QPA_PLATFORMTHEME "qt6ct"
 }
 
 // Cursor. niri exports XCURSOR_THEME and XCURSOR_SIZE to every client from

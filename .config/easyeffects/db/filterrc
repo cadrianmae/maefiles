@@ -10,3 +10,10 @@ frequency=40
 slope=1
 type=1
 width=1
+
+[soe][Filter#1]
+bypass=true
+frequency=1463.5042724609375
+quality=2
+type=5
+width=0.06000000238418579

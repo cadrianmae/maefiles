@@ -5,3 +5,12 @@ ratio=3
 release=200
 sidechainMode=1
 threshold=-18
+
+[soe][Compressor#0]
+boostAmount=5.999989986419678
+boostThreshold=-71.99995422363281
+knee=-6.000125408172607
+release=23.498647689819336
+sidechainMode=1
+sidechainType=2
+threshold=-11.999951362609863
