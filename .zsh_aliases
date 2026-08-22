@@ -14,31 +14,31 @@ alias clip=wl-copy
 
 alias open="xdg-open"
 
-# Clear kitty graphics (ghosted images) in tmux
-alias imgclear="printf '\ePtmux;\e\e_Ga=d\e\e\\\\\e\\\\'"
-alias clear-images='kitty +kitten icat --clear'
-
-# Docker rootless
-alias docker-start="systemctl --user start docker"
-alias docker-stop="systemctl --user stop docker"
-alias docker-restart="systemctl --user restart docker"
-alias docker-status="systemctl --user status docker"
-alias docker-log="journalctl --user -u docker.service -f"
-alias docker-enable="systemctl --user enable docker"
-
-# Theme switching — lumae via tinty (kitty + tmux + nvim in one command)
-alias kitty-light='tinty apply base24-lumae-dawn'
-alias kitty-dark='tinty apply base24-lumae-midnight'
-# other lumae flavors:
-alias kitty-dusk='tinty apply base24-lumae-dusk'
-alias kitty-sand='tinty apply base24-lumae-earth-sand'
-alias kitty-cocoa='tinty apply base24-lumae-earth-cocoa'
-
-# Snappy UI screenshot timer (on Pi)
-alias sss-start='ssh snappy.home systemctl --user start snappy-ss.timer'
-alias sss-stop='ssh snappy.home systemctl --user stop snappy-ss.timer'
-alias sss-status='ssh snappy.home systemctl --user list-timers snappy-ss.timer --no-pager'
-alias sss-now='ssh snappy.home systemctl --user start snappy-ss.service'
+# # Clear kitty graphics (ghosted images) in tmux
+# alias imgclear="printf '\ePtmux;\e\e_Ga=d\e\e\\\\\e\\\\'"
+# alias clear-images='kitty +kitten icat --clear'
+# 
+# # Docker rootless
+# alias docker-start="systemctl --user start docker"
+# alias docker-stop="systemctl --user stop docker"
+# alias docker-restart="systemctl --user restart docker"
+# alias docker-status="systemctl --user status docker"
+# alias docker-log="journalctl --user -u docker.service -f"
+# alias docker-enable="systemctl --user enable docker"
+# 
+# # Theme switching — lumae via tinty (kitty + tmux + nvim in one command)
+# alias kitty-light='tinty apply base24-lumae-dawn'
+# alias kitty-dark='tinty apply base24-lumae-midnight'
+# # other lumae flavors:
+# alias kitty-dusk='tinty apply base24-lumae-dusk'
+# alias kitty-sand='tinty apply base24-lumae-earth-sand'
+# alias kitty-cocoa='tinty apply base24-lumae-earth-cocoa'
+# 
+# # Snappy UI screenshot timer (on Pi)
+# alias sss-start='ssh snappy.home systemctl --user start snappy-ss.timer'
+# alias sss-stop='ssh snappy.home systemctl --user stop snappy-ss.timer'
+# alias sss-status='ssh snappy.home systemctl --user list-timers snappy-ss.timer --no-pager'
+# alias sss-now='ssh snappy.home systemctl --user start snappy-ss.service'
 
 # Browse every per-project Claude MEMORY.md in one bat view.
 # Null-delim + xargs for space-safe paths; single bat invocation = one pager.
@@ -50,4 +50,9 @@ alias piiscan='gitleaks detect --config ~/.config/gitleaks/pii-rules.toml --no-b
 # Edit wezterm config
 alias wezconfig='$EDITOR ~/.config/wezterm/wezterm.lua'
 
+# Flatpak
 alias gearlever='flatpak run it.mijorus.gearlever'
+
+# Claude
+alias claude='PATH="$HOME/.claude/bin:$PATH" command claude'
+
