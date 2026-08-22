@@ -94,6 +94,15 @@ plugins=(
   zsh-autocomplete
 )
 
+# Drop plugins whose backing command is absent. Toolbox/distrobox containers
+# share $HOME but not the host's packages, so this same .zshrc runs in shells
+# where zoxide and tmux do not exist. Filtering preserves array order, which
+# matters -- fast-syntax-highlighting and zsh-autocomplete must stay last.
+for _p in zoxide tmux; do
+  (( $+commands[$_p] )) || plugins=(${plugins:#$_p})
+done
+unset _p
+
 source $ZSH/oh-my-zsh.sh
 
 # lumae/base16 fix: FSH styles comments fg=black, but base16 themes map
@@ -140,8 +149,20 @@ eval "$(pyenv virtualenv-init -)"
 # bindkey '^v' edit-command-line
 MODE_INDICATOR="%F{blue}■%f"
 INSERT_MODE_INDICATOR="%F{green}▼%f"
+# Container indicator. podman writes /run/.containerenv with name="<container>";
+# toolbox additionally creates /run/.toolboxenv. Resolved once at startup rather
+# than per-prompt -- a shell cannot change container mid-life, so a static string
+# avoids a subprocess on every redraw. Empty on the host, so the segment vanishes.
+_toolbox_segment=""
+if [[ -r /run/.containerenv ]]; then
+  _toolbox_name=$(sed -n 's/^name="\(.*\)"$/\1/p' /run/.containerenv)
+  [[ -z $_toolbox_name ]] && _toolbox_name="container"
+  _toolbox_segment="%F{magenta}[${_toolbox_name}]%f "
+  unset _toolbox_name
+fi
+
 # Override robbyrussell's PROMPT char: green ➜ on success, red ✗ on failure
-PROMPT="%(?:%{$fg_bold[green]%}%1{➜%} :%{$fg_bold[red]%}%1{✘%} ) %{$fg[cyan]%}%c%{$reset_color%} \$(git_prompt_info)\$(vi_mode_prompt_info) \$(direnv_prompt_info) "
+PROMPT="${_toolbox_segment}%(?:%{$fg_bold[green]%}%1{➜%} :%{$fg_bold[red]%}%1{✘%} ) %{$fg[cyan]%}%c%{$reset_color%} \$(git_prompt_info)\$(vi_mode_prompt_info) \$(direnv_prompt_info) "
 RPROMPT="%F{green}%D{%Y-%m-%d %H:%M:%S}%f \$(direnv_rprompt_info) $RPROMPT"
 
 zstyle ':autocomplete:*' min-input 3
@@ -178,8 +199,11 @@ if [[ -f ~/.cache/yadm-secrets-stale ]]; then
   unset _stale_count
 fi
 
-fortune | cowsay -f $(cowsay -l | tail -n +2 | tr ' ' '\n' | shuf -n 1) | lolcat -b
-eval "$(direnv hook zsh)"
+# Greeting and direnv are host-only; see the plugin filter above for why.
+if (( $+commands[fortune] && $+commands[cowsay] && $+commands[lolcat] )); then
+  fortune | cowsay -f $(cowsay -l | tail -n +2 | tr ' ' '\n' | shuf -n 1) | lolcat -b
+fi
+(( $+commands[direnv] )) && eval "$(direnv hook zsh)"
 
 # bun completions
 [ -s "/home/cadrianmae/.oh-my-zsh/completions/_bun" ] && source "/home/cadrianmae/.oh-my-zsh/completions/_bun"
