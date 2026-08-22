@@ -39,6 +39,14 @@ input {
         // scroll-method "no-scroll"
     }
 
+    // Wacom Intuos Draw (CTL-490). Without map-to-output the tablet spans the
+    // full logical output space (both screens), so the pen only reaches half
+    // of each. Bind it to one output. Swap to "HDMI-A-1" to draw on the AOC.
+    tablet {
+        map-to-output "eDP-1"
+        // left-handed
+    }
+
     trackpoint {
         // off
         // natural-scroll
