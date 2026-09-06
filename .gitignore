@@ -44,3 +44,4 @@ reinstall-kit/
 # pkg-triage rewrites its decision file in place and keeps a timestamped copy
 # each time. The live file is worth versioning; the copies are churn.
 .local/state/pkg-triage/decisions.tsv.bak-*
+.config/wezterm/colors/Noctalia.toml
