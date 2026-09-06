@@ -56,3 +56,8 @@ alias gearlever='flatpak run it.mijorus.gearlever'
 # Claude
 alias claude='PATH="$HOME/.claude/bin:$PATH" command claude'
 
+# power (power-countdown lives in ~/.zsh_functions)
+alias suspend='power-countdown --no-confirm suspend "Suspending"'
+alias hibernate='power-countdown hibernate "Hibernating"'
+alias reboot='power-countdown reboot "Rebooting"'
+alias shutdown='power-countdown poweroff "Shutting down"'

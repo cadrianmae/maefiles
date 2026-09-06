@@ -339,3 +339,43 @@ gclone() {
   git clone "$@" -- "$url" "$dest" || return
   cd "$dest"
 }
+
+# Power actions with a 5-second countdown, allowing the user to cancel with Ctrl-C.
+power-countdown() {
+  local confirm=1
+  local -a valid_actions=(poweroff reboot suspend hibernate)
+
+  # Flags first, so they are consumed before $1 is read as the action.
+  while [[ "$1" == -* ]]; do
+    case "$1" in
+      --no-confirm|-y) confirm=0 ;;
+      --) shift; break ;;
+      *) print -u2 "power-countdown: unknown option '$1'"; return 1 ;;
+    esac
+    shift
+  done
+
+  local action="$1" label="${2:-$1}" i
+
+  if [[ -z "$action" ]]; then
+    print -u2 "Usage: power-countdown [--no-confirm] <action> [label]"
+    print -u2 "Actions: ${valid_actions[*]}"
+    return 1
+  fi
+
+  (( ${valid_actions[(Ie)$action]} )) || { print -u2 "power-countdown: unknown action '$action'"; return 1; }
+
+  # read -q takes a single keypress; only y/Y succeeds, so Enter means no. With
+  # no terminal it fails, which lands here too -- fail-safe rather than proceed.
+  if (( confirm )); then
+    read -q "REPLY?${label}? [y/N] " || { print "\ncancelled."; return 1; }
+  fi
+
+  for i in {5..1}; do
+    print -n "\r\e[K${label} in $i seconds... (Ctrl-C to cancel)"
+    command sleep 1
+  done
+
+  print -n "\r\e[K${label} now!"
+  systemctl "$action"
+}
