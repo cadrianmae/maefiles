@@ -21,7 +21,7 @@ end = [
 ]
 margin_ends = 8
 scale = 1.1000000089406967
-start = [ "launcher", "active_window", "wallpaper", "workspaces", "widget", "mae/sysmon:sysmon" ]
+start = [ "launcher", "active_window", "wallpaper", "theme_mode", "workspaces", "widget", "mae/sysmon:sysmon" ]
 
 [calendar]
 
@@ -217,10 +217,10 @@ polkit_agent = true
 
 [theme]
 builtin = "Ayu"
-community_palette = "Catppuccin Macchiato Pink"
-custom_palette = "Lumae-Midnight"
-mode = "auto"
-source = "custom"
+community_palette = "Catppuccin Mocha Pink"
+custom_palette = "Lumae-Dusk"
+mode = "dark"
+source = "community"
 
     [theme.templates]
     builtin_ids = [ "gtk3", "gtk4", "niri", "qt", "wezterm" ]
@@ -228,6 +228,7 @@ source = "custom"
 
 [wallpaper]
 directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
+transition_on_startup = true
 
     [wallpaper.automation]
     enabled = true
@@ -243,30 +244,6 @@ directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
 
     [wallpaper.monitors.eDP-1]
     path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
-
-    [[wallpaper.favorite]]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
-    theme_mode = "auto"
-
-    [[wallpaper.favorite]]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
-    theme_mode = "auto"
-
-    [[wallpaper.favorite]]
-    custom_palette = "Lumae-Midnight"
-    palette_source = "custom"
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/hiep-duong-5lfi9EHs6Vg-unsplash.jpg"
-    theme_mode = "dark"
-
-    [[wallpaper.favorite]]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
-    theme_mode = "auto"
-
-    [[wallpaper.favorite]]
-    custom_palette = "Lumae-Midnight"
-    palette_source = "custom"
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/zhang-kaiyv--ROKY-TemRY-unsplash.jpg"
-    theme_mode = "auto"
 
 [widget.active_window]
 max_length = 128
