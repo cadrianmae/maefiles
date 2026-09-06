@@ -1,4 +1,4 @@
-config_version = 8
+config_version = 14
 
 [audio]
 enable_sounds = true
@@ -23,6 +23,8 @@ margin_ends = 8
 scale = 1.1000000089406967
 start = [ "launcher", "active_window", "wallpaper", "workspaces", "widget", "mae/sysmon:sysmon" ]
 
+[calendar]
+
 [control_center.calendar]
 show_week_numbers = true
 
@@ -34,6 +36,25 @@ pinned = [ "org.wezfurlong.wezterm", "zen", "obsidian", "com.blitzfc.qbz" ]
 reserve_space = false
 show_dots = true
 smart_auto_hide = true
+
+[idle]
+behavior_order = [ "lock", "screen-off", "lock-and-suspend" ]
+pre_action_fade_seconds = 30
+
+    [idle.behavior.lock]
+    action = "lock"
+    enabled = true
+    timeout = 600.0
+
+    [idle.behavior.lock-and-suspend]
+    action = "lock_and_suspend"
+    enabled = false
+    timeout = 7200.0
+
+    [idle.behavior.screen-off]
+    action = "screen_off"
+    enabled = true
+    timeout = 660.0
 
 [location]
 auto_locate = true
@@ -49,11 +70,13 @@ widget_order = [ "lockscreen-login-box@HDMI-A-1", "lockscreen-login-box@eDP-1" ]
     visible = true
 
     [lockscreen_widgets.widget."lockscreen-login-box@HDMI-A-1"]
-    box_height = 229.0
+    box_height = 196.0
     box_width = 810.0
     cx = 960.0
     cy = 881.5
     output = "HDMI-A-1"
+    placement_height = 1080.0
+    placement_width = 1920.0
     rotation = 0.0
     type = "login_box"
 
@@ -70,14 +93,17 @@ widget_order = [ "lockscreen-login-box@HDMI-A-1", "lockscreen-login-box@eDP-1" ]
         show_login_button = true
         show_media = true
         show_session_buttons = true
+        show_unlock_hint = true
         show_weather = true
 
     [lockscreen_widgets.widget."lockscreen-login-box@eDP-1"]
-    box_height = 229.0
+    box_height = 196.0
     box_width = 810.0
     cx = 960.0
     cy = 881.5
     output = "eDP-1"
+    placement_height = 1080.0
+    placement_width = 1920.0
     rotation = 0.0
     type = "login_box"
 
@@ -94,6 +120,7 @@ widget_order = [ "lockscreen-login-box@HDMI-A-1", "lockscreen-login-box@eDP-1" ]
         show_login_button = true
         show_media = true
         show_session_buttons = true
+        show_unlock_hint = true
         show_weather = true
 
 [nightlight]
@@ -109,7 +136,7 @@ position_vertical = "center_right"
 vault_path = "~/Documents/MaeNotes"
 
 [plugins]
-enabled = [ "mae/sysmon", "noctalia/bitwarden", "noctalia/bongocat", "mae/focus-timer" ]
+enabled = [ "mae/sysmon", "noctalia/bongocat", "noctalia/kaomoji" ]
 
     [[plugins.source]]
     kind = "git"
@@ -190,7 +217,7 @@ polkit_agent = true
 
 [theme]
 builtin = "Ayu"
-community_palette = "ADW"
+community_palette = "Catppuccin Macchiato Pink"
 custom_palette = "Lumae-Midnight"
 mode = "auto"
 source = "custom"
@@ -206,16 +233,16 @@ directory = "/home/cadrianmae/Pictures/Wallpaper 2024"
     enabled = true
 
     [wallpaper.default]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
 
     [wallpaper.last]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
 
     [wallpaper.monitors.HDMI-A-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
 
     [wallpaper.monitors.eDP-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/dan-gold-CCKcwh7s9A4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
 
     [[wallpaper.favorite]]
     path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
