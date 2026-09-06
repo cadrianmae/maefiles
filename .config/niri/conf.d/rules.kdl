@@ -64,6 +64,7 @@ window-rule {
     match app-id="^steam$" title=r#"^notificationtoasts_\d+_desktop$"#
     open-floating true
     default-floating-position x=16 y=16 relative-to="top-right"
+    open-focused false
 }
 
 // Frost Noctalia's layer-shell surfaces. The bar is semi-transparent
