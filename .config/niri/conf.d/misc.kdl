@@ -1,4 +1,4 @@
-// Session environment (niri only — does not affect the Plasma session).
+// Session environment.
 environment {
     // Run Firefox/Zen as native Wayland instead of X11/Xwayland.
     // Fixes drag-and-drop from Wayland apps (Nautilus) into the browser,

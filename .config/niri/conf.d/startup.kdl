@@ -5,8 +5,7 @@
 
 // Noctalia is the bar/shell (replaces waybar). Install: sudo dnf install noctalia
 // Started by noctalia.service instead of spawn-at-startup, so systemd can
-// restart it when the OOM killer takes it out. The unit is WantedBy=niri.service,
-// so it stays niri-only and never starts under Plasma.
+// restart it when the OOM killer takes it out. The unit is WantedBy=niri.service.
 // spawn-at-startup "noctalia"
 // waybar disabled on purpose — Noctalia provides the bar. Do NOT run both.
 // spawn-at-startup "waybar"

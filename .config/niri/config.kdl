@@ -7,7 +7,6 @@
 //
 // KDL format:  https://kdl.dev
 // niri config: https://niri-wm.github.io/niri/Configuration:-Introduction
-// Split/backup of the original single file: config.kdl.pre-split.bak
 
 include "conf.d/input.kdl"       // keyboard (layouts), touchpad, mouse, trackpoint
 include "conf.d/outputs.kdl"     // monitor configuration (currently all examples)
@@ -18,4 +17,4 @@ include "conf.d/rules.kdl"       // window-rules (wezterm, firefox PiP, examples
 include "conf.d/binds.kdl"       // all keybinds
 
 include "noctalia.kdl"         // Noctalia template — base theme colours (auto-generated, tracks scheme)
-include "lumae-dusk.kdl"       // Aero overrides: gradient glass-edge sheen + shadow — MUST be last
+// include "lumae-dusk.kdl"       // Aero overrides: gradient glass-edge sheen + shadow — MUST be last
