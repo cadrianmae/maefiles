@@ -1,5 +1,4 @@
-// Input device configuration.
-// Find the full list of options on the wiki:
+// Input devices.
 // https://niri-wm.github.io/niri/Configuration:-Input
 input {
     keyboard {
@@ -10,13 +9,12 @@ input {
             options "caps:escape_shifted_capslock, eurosign:4"
         }
 
-        // Enable numlock on startup, omitting this setting disables it.
+        // omitting this disables numlock at startup
         numlock
     }
 
-    // Next sections include libinput settings.
-    // Omitting settings disables them, or leaves them at their default values.
-    // All commented-out settings here are examples, not defaults.
+    // libinput. Omitting a setting disables it or leaves its default; the
+    // commented lines below are examples, not defaults.
     touchpad {
         // off
         tap
@@ -41,7 +39,7 @@ input {
 
     // Wacom Intuos Draw (CTL-490). Without map-to-output the tablet spans the
     // full logical output space (both screens), so the pen only reaches half
-    // of each. Bind it to one output. Swap to "HDMI-A-1" to draw on the AOC.
+    // of each. Swap to "HDMI-A-1" to draw on the AOC.
     tablet {
         map-to-output "eDP-1"
         // left-handed
@@ -58,10 +56,8 @@ input {
         // middle-emulation
     }
 
-    // Uncomment this to make the mouse warp to the center of newly focused windows.
     // warp-mouse-to-focus
 
-    // Focus windows and outputs automatically when moving the mouse into them.
-    // Setting max-scroll-amount="0%" makes it work only on windows already fully on screen.
+    // max-scroll-amount="0%" limits this to windows already fully on screen
     // focus-follows-mouse max-scroll-amount="0%"
 }

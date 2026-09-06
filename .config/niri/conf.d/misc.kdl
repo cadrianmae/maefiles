@@ -1,10 +1,12 @@
 // Session environment.
+// https://niri-wm.github.io/niri/Configuration:-Miscellaneous
 environment {
     // Run Firefox/Zen as native Wayland instead of X11/Xwayland.
     // Fixes drag-and-drop from Wayland apps (Nautilus) into the browser,
     // plus better fractional scaling. Restart the browser after enabling.
     MOZ_ENABLE_WAYLAND "1"
-    // For Electron apps (Vesktop, VS Code, etc.) to run Wayland too, uncomment:
+
+    // same for Electron apps (Vesktop, VS Code)
     // ELECTRON_OZONE_PLATFORM_HINT "auto"
 
     // Load qt6ct so Qt apps pick up the Noctalia palette.
@@ -31,33 +33,25 @@ cursor {
 }
 
 hotkey-overlay {
-    // Uncomment this line to disable the "Important Hotkeys" pop-up at startup.
     // skip-at-startup
 }
 
-// Uncomment this line to ask the clients to omit their client-side decorations if possible.
-// If the client will specifically ask for CSD, the request will be honored.
-// Additionally, clients will be informed that they are tiled, removing some client-side rounded corners.
-// This option will also fix border/focus ring drawing behind some semitransparent windows.
-// After enabling or disabling this, you need to restart the apps for this to take effect.
+// Asks clients to drop client-side decorations, though an explicit CSD request
+// is still honoured. Also marks windows tiled (removing some CSD rounded
+// corners) and fixes border drawing behind semitransparent windows. Restart
+// apps after changing.
 // prefer-no-csd
 
-// You can change the path where screenshots are saved.
-// A ~ at the front will be expanded to the home directory.
-// The path is formatted with strftime(3) to give you the screenshot date and time.
+// strftime(3) formatted, ~ expands to home
 screenshot-path "~/Pictures/Screenshots/Screenshot from %Y-%m-%d %H-%M-%S.png"
-
-// You can also set this to null to disable saving screenshots to disk.
+// null disables saving screenshots to disk
 // screenshot-path null
 
-// Animation settings.
-// The wiki explains how to configure individual animations:
 // https://niri-wm.github.io/niri/Configuration:-Animations
 animations {
-    // Uncomment to turn off all animations.
     // off
 
-    // Slow down all animations by this factor. Values below 1 speed them up instead.
+    // below 1 speeds them up instead
     // slowdown 3.0
 }
 
