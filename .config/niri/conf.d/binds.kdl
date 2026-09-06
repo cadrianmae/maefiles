@@ -269,22 +269,17 @@ binds {
     // Mod+Space       { switch-layout "next"; }
     // Mod+Shift+Space { switch-layout "prev"; }
 
-    // Screen capture. grim/slurp/wf-recorder all talk to the compositor through
-    // wlr-screencopy; nothing here touches the XDG portal, which is broken under
-    // niri -- xdg-desktop-portal-gnome answers "internal error", which is why
-    // flameshot timed out and ksnip segfaulted.
-    //
-    //   Print            focused monitor -> clipboard, no UI at all
-    //   Ctrl+Print       freeze screen   -> crop a region, then annotate
-    //   Alt+Print        toggle a screen recording
-    //   Ctrl+Alt+Print   pick a window   (niri's own; grim cannot do this)
+    Print hotkey-overlay-title="Screenshot Monitor to Clipboard" { screenshot-screen write-to-disk=false show-pointer=false; }
 
-    // -o the focused output, or a second monitor gets captured instead.
-    Print { screenshot-window; }
+    // Noctalia rather than niri's own action: it pipes the capture to satty
+    // itself (see pipe_command under [shell.screenshot]), where niri's action is
+    // asynchronous and signals no completion -- its PNG lands roughly 400ms after
+    // the command returns, so anything piped from it reads an empty file.
+    Ctrl+Print hotkey-overlay-title="Screenshot Monitor, then Crop and Annotate" { spawn "noctalia" "msg" "screenshot-fullscreen"; }
 
-    Ctrl+Print { spawn-sh "grim -o \"$(niri msg --json focused-output | python3 -c 'import json,sys; print(json.load(sys.stdin)[\"name\"])')\" - | satty -f - --fullscreen --initial-tool crop"; }
+    Mod+Print hotkey-overlay-title="Screenshot a Window" { screenshot-window; }
 
-    Alt+Print { spawn "screenrec"; }
+    Alt+Print hotkey-overlay-title="Toggle Screen Recording: screenrec" { spawn "screenrec"; }
 
     // Applications such as remote-desktop clients and software KVM switches may
     // request that niri stops processing the keyboard shortcuts defined here
