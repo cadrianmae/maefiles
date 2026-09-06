@@ -4,7 +4,7 @@ config_version = 14
 enable_sounds = true
 
 [bar.default]
-center = [ "cat", "clock", "audio_visualizer" ]
+center = [ "recorder", "cat", "clock", "audio_visualizer" ]
 end = [
     "media",
     "tray",
@@ -135,8 +135,13 @@ position_vertical = "center_right"
 [plugin_settings."davemhammer/obsidian"]
 vault_path = "~/Documents/MaeNotes"
 
+[plugin_settings."noctalia/screen_recorder"]
+copy_to_clipboard = true
+replay_enabled = true
+video_source = "focused"
+
 [plugins]
-enabled = [ "mae/sysmon", "noctalia/bongocat", "noctalia/kaomoji" ]
+enabled = [ "mae/sysmon", "noctalia/bongocat", "noctalia/kaomoji", "icefish/phone-connect" ]
 
     [[plugins.source]]
     kind = "git"
@@ -160,6 +165,7 @@ enabled = [ "mae/sysmon", "noctalia/bongocat", "noctalia/kaomoji" ]
 
 [shell]
 avatar_path = "/var/lib/AccountsService/icons/cadrianmae"
+clipboard_image_action_command = "satty -f - --fullscreen --initial-tool crop"
 launch_apps_as_systemd_services = true
 panel_anchor_bar = "default"
 polkit_agent = true
@@ -169,6 +175,12 @@ polkit_agent = true
 
     [shell.screen_corners]
     enabled = true
+
+    [shell.screenshot]
+    confirm_region = true
+    directory = "~/Pictures/Screenshots/"
+    pipe_command = "satty --initial-tool crop --fullscreen -f -"
+    pipe_to_command = true
 
     [[shell.session.actions]]
     action = "lock"
@@ -215,6 +227,9 @@ polkit_agent = true
     shortcut = "6"
     variant = "destructive"
 
+    [shell.window_switcher]
+    mru = true
+
 [theme]
 builtin = "Ayu"
 community_palette = "Catppuccin Mocha Pink"
@@ -234,16 +249,16 @@ transition_on_startup = true
     enabled = true
 
     [wallpaper.default]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
 
     [wallpaper.last]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
 
     [wallpaper.monitors.HDMI-A-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
 
     [wallpaper.monitors.eDP-1]
-    path = "/home/cadrianmae/Pictures/Wallpaper 2024/andrea-de-santis-V_RnZ09HZb4-unsplash.jpg"
+    path = "/home/cadrianmae/Pictures/Wallpaper 2024/jacky-zeng-4MBsxirQvqc-unsplash.jpg"
 
 [widget.active_window]
 max_length = 128
@@ -288,6 +303,9 @@ title_scroll = "always"
 [widget.network]
 show_label = false
 vpn_status = "both"
+
+[widget.recorder]
+type = "noctalia/screen_recorder:recorder"
 
 [widget.tray]
 capsule = true
