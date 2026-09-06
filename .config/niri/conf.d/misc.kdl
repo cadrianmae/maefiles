@@ -60,3 +60,11 @@ animations {
     // Slow down all animations by this factor. Values below 1 speed them up instead.
     // slowdown 3.0
 }
+
+// Chromium/Electron (Vesktop, OBS) cannot import Intel Y_TILED_CCS dmabufs
+// from the screencast stream -- every frame fails import and Go Live goes
+// black. Force the INVALID (implicit) modifier so the consumer gets buffers
+// it can actually map.
+debug {
+    force-pipewire-invalid-modifier
+}
