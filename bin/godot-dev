@@ -3,7 +3,15 @@
 # Usage: godot-dev <command> [args]
 
 # Configuration
-GODOT_BIN="godot-4.6"
+# First match wins. Override by exporting GODOT_BIN.
+GODOT_BIN="${GODOT_BIN:-$(command -v godot-4.6 || command -v godot-4.7 || command -v godot)}"
+
+if [[ -z "$GODOT_BIN" ]]; then
+  echo "Error: no Godot binary found (tried godot-4.6, godot-4.7, godot)" >&2
+  echo "Install Godot or export GODOT_BIN=/path/to/godot" >&2
+  exit 1
+fi
+
 NVIDIA_ENV="__NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia"
 
 # Default to discrete GPU (NVIDIA)
