@@ -13,18 +13,16 @@ binds {
     // shows a list of important hotkeys.
     Mod+Shift+Slash { show-hotkey-overlay; }
 
-    // Suggested binds for running programs: terminal, app launcher, screen locker.
     Mod+T hotkey-overlay-title="Open a Terminal: wezterm" { spawn "wezterm"; }
-    Mod+D hotkey-overlay-title="Run an Application: fuzzel" { spawn "fuzzel"; }
-    // Lock via Noctalia (v5 session lock), replaces swaylock
+
     Super+Alt+L hotkey-overlay-title="Lock the Screen: Noctalia" { spawn "noctalia" "msg" "session" "lock"; }
-    // Old swaylock bind, kept for reference:
-    // Super+Alt+L { spawn "swaylock"; }
+    Mod+X hotkey-overlay-title="Session: Noctalia" { spawn "noctalia" "msg" "panel-toggle" "session"; }
 
     // Noctalia shell keybinds (launcher is primary; fuzzel on Mod+D stays as backup)
     Mod+Space hotkey-overlay-title="App Launcher: Noctalia" { spawn "noctalia" "msg" "panel-toggle" "launcher"; }
     Mod+S     hotkey-overlay-title="Control Center: Noctalia" { spawn "noctalia" "msg" "panel-toggle" "control-center"; }
     Mod+Shift+S hotkey-overlay-title="Noctalia Settings" { spawn "noctalia" "msg" "settings-toggle"; }
+    Mod+Ctrl+Period hotkey-overlay-title="Emoji Picker: Noctalia" { spawn "noctalia" "msg" "panel-toggle" "launcher" "/emo "; }
 
     // Use spawn-sh to run a shell command. Do this if you need pipes, multiple commands, etc.
     // Note: the entire command goes as a single argument. It's passed verbatim to `sh -c`.
@@ -309,4 +307,17 @@ binds {
     // Switch keyboard layouts
     Mod+Alt+K { switch-layout "next"; }
     Mod+Alt+Shift+K { switch-layout "prev"; }
+
+    // tier:strong -- toggles the controller preset on/off. Stops the grab so
+    // Steam/Minecraft see the real pad (correct name + GUID for SDL).
+    Mod+F1 { spawn "ir-toggle"; }
+
+    // tier:weak -- input-remapper layer sentinels. No user-facing function;
+    // they exist only so the controller's layer macro can trigger a notification.
+    // YIELD: if any bind wants F2/F3, move these to the next free F-key and
+    // update BOTH places -- here, and the Select (314) macro in
+    // ~/.config/input-remapper-2/presets/Xbox Wireless Controller/Navigation.json
+    // Layer index maps to F<index+2>. F19 is reserved (PTT).
+    Mod+F2 { spawn "ir-layer-notify" "Base"; }
+    Mod+F3 { spawn "ir-layer-notify" "niri navigation"; }
 }
